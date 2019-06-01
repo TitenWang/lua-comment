@@ -82,6 +82,7 @@ typedef struct lua_State lua_State;
 
 /* predefined values in the registry */
 #define LUA_RIDX_MAINTHREAD	1
+/* _G在堆栈中的索引 */
 #define LUA_RIDX_GLOBALS	2
 #define LUA_RIDX_LAST		LUA_RIDX_GLOBALS
 
@@ -345,6 +346,10 @@ LUA_API void      (lua_setallocf) (lua_State *L, lua_Alloc f, void *ud);
 
 #define lua_pop(L,n)		lua_settop(L, -(n)-1)
 
+/*
+** lua_createtable()函数用于创建一个table，然后压入堆栈，并根据narray和nrec对新创建的table
+** 的数组部分或者hash表部分的进行大小更新。narray和nrec均为0，说明这个table是一个空table。
+*/
 #define lua_newtable(L)		lua_createtable(L, 0, 0)
 
 #define lua_register(L,n,f) (lua_pushcfunction(L, (f)), lua_setglobal(L, (n)))

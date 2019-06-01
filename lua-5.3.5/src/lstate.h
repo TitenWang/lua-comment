@@ -169,6 +169,10 @@ typedef struct global_State {
   lu_mem GCmemtrav;  /* memory traversed by the GC */
   lu_mem GCestimate;  /* an estimate of the non-garbage memory in use */
   stringtable strt;  /* hash table for strings */ /* 存放系统中所有字符串的hash表 */
+  /* 
+  ** 保存全局的注册表，注册表就是一个全局的table（即整个虚拟机中只有一个注册表），
+  ** 它只能被C代码访问，通常，它用来保存那些需要在几个模块中共享的数据
+  */
   TValue l_registry;
   unsigned int seed;  /* randomized seed for hashes */
   lu_byte currentwhite;
@@ -217,7 +221,7 @@ struct lua_State {
   /* status存放的是thread的执行状态 */
   lu_byte status;
 
-  /* 指向整个函数调用栈的栈顶位置（未存入有效数据） */
+  /* 指向整个堆栈的栈顶位置（未存入有效数据） */
   StkId top;  /* first free slot in the stack */
   global_State *l_G;  /* l_G指向的是由所有thread共享的全局虚拟机信息 */
 

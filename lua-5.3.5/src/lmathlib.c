@@ -405,17 +405,39 @@ static const luaL_Reg mathlib[] = {
 /*
 ** Open math library
 */
-/* lua的数学库引入了一系列常用数学函数，以及四个常量，
-** 即：pi,huge,maxinteger,mininteger 
+/* 
+** 引入math库，执行完luaopen_math()函数之后，位于堆栈最顶部的元素就是那个存放了
+** 所有数学函数及常量的table。
 */
 LUAMOD_API int luaopen_math (lua_State *L) {
+  /* 
+  ** 将mathlib中定义的函数及其名字存入一个table中，这个table是库级别的，
+  ** 即一个库对应一个table。执行完luaL_newlib()之后，这个table就位于堆栈
+  ** 最顶部。
+  */
   luaL_newlib(L, mathlib);
+
+  /* 
+  ** 先将常量PI压入堆栈，然后将常量PI存入上面创建的那个对应于math库的table中，
+  ** 然后再弹出此时位于堆栈顶部的PI。因此执行完到最后，table又位于堆栈最顶部。
+  ** 这里解释一下为什么是“-2”？因为L->top指向的是堆栈中下一个即将存入内容的地址，
+  ** 在执行lua_pushnumber(L, PI)之前，table是堆栈最顶部元素，其地址为L->top-1;
+  ** 那么执行完lua_pushnumber(L, PI)之后，table的地址就是L->top-2了，此时PI是
+  ** 堆栈最顶部元素，所以再执行lua_setfield()时传入-2，就可以通过L->top - 2来获取
+  ** table的地址了。
+  */
   lua_pushnumber(L, PI);
   lua_setfield(L, -2, "pi");
+
+  /* 同上，将常量huge存入上面创建的那个对应于math库的table中 */
   lua_pushnumber(L, (lua_Number)HUGE_VAL);
   lua_setfield(L, -2, "huge");
+
+  /* 同上，将常量maxinteger存入上面创建的那个对应于math库的table中 */
   lua_pushinteger(L, LUA_MAXINTEGER);
   lua_setfield(L, -2, "maxinteger");
+
+  /* 同上，将常量mininteger存入上面创建的那个对应于math库的table中 */
   lua_pushinteger(L, LUA_MININTEGER);
   lua_setfield(L, -2, "mininteger");
   return 1;

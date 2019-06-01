@@ -128,7 +128,8 @@ LUALIB_API void (luaL_requiref) (lua_State *L, const char *modname,
 ** 1. 检查版本号是否一致，如果不一致的话，进程会异常退出；
 ** 2. 申请一个新的table并压入堆栈，待注册的库的函数列表存放在table的hash表部分；
 ** 3. 将库中待注册的函数的自由变量以及对应的CClosure对象依次压入堆栈。
-** 4. 并将CClosure对象以函数名字为键值存放到table中。
+** 4. 并将CClosure对象以函数名字为键值存放到table中。CClosure对象存入table之后
+** 	  会被弹出堆栈。因此执行到最后位于堆栈顶部的元素就是那个table。
 */
 #define luaL_newlib(L,l)  \
   (luaL_checkversion(L), luaL_newlibtable(L,l), luaL_setfuncs(L,l,0))

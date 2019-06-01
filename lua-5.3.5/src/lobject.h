@@ -549,6 +549,7 @@ typedef struct CClosure {
 } CClosure;
 
 
+/* Lua Closure对象 */
 typedef struct LClosure {
   ClosureHeader;
   struct Proto *p; /* 存放lua闭包对应的函数原型信息 */

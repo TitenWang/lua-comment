@@ -56,12 +56,22 @@ static const luaL_Reg loadedlibs[] = {
   {NULL, NULL}
 };
 
-
+/* luaL_openlibs()函数用于加载lua的标准库 */
 LUALIB_API void luaL_openlibs (lua_State *L) {
   const luaL_Reg *lib;
   /* "require" functions from 'loadedlibs' and set results to global table */
   for (lib = loadedlibs; lib->func; lib++) {
+  	/* 
+    ** luaL_requiref()函数的作用就是将模块lib->name对应的table加入到_LOADED和_G
+    ** 这两个table中，成为它们的子table。模块对应的table的创建可以看具体模块的
+    ** 加载函数的实现，即下面的lib->func，比如math库，可以看luaopen_math()
+    */
     luaL_requiref(L, lib->name, lib->func, 1);
+	/* 
+	** 从luaL_requiref()的实现我们可以知道，在执行完luaL_requiref()函数后，
+	** 位于堆栈顶部的元素仍然是模块modname对应的table，因为这时候的这个table
+	** 已经没有啥用了，于是下面就调用lua_pop()将其弹出堆栈。
+	*/
     lua_pop(L, 1);  /* remove lib */
   }
 }

@@ -167,6 +167,13 @@ LUA_API const lua_Number *lua_version (lua_State *L) {
 /*
 ** convert an acceptable stack index into an absolute index
 */
+/*
+** lua_absindex()用于取堆栈索引值得绝对值。这个绝对值并不完全和数学上的绝对值一样，
+** 是具有上下文含义的绝对值，如下：
+** 1.如果idx大于0，那么直接返回该值；
+** 2.如果idx小于等于LUA_REGISTRYINDEX（一个负值），那么也直接返回该值；
+** 3.如果idx在(LUA_REGISTRYINDEX,0]之间，则返回对应的绝对值。
+*/
 LUA_API int lua_absindex (lua_State *L, int idx) {
   return (idx > 0 || ispseudo(idx))
          ? idx
@@ -178,17 +185,29 @@ LUA_API int lua_gettop (lua_State *L) {
   return cast_int(L->top - (L->ci->func + 1));
 }
 
-/* 重新设置堆栈的栈顶指针 */
+/* 
+** 重新设置堆栈的堆栈指针，
+** idx >= 0时，L->top = L->ci_func + 1 + idx；
+** idx < 0时，L->top= L->top + 1 + idx 
+*/
 LUA_API void lua_settop (lua_State *L, int idx) {
+  /* 当前函数调用栈的基址，也就是函数指针的地址 */
   StkId func = L->ci->func;
   lua_lock(L);
   if (idx >= 0) {
+    /* idx >= 0时，检查上层传入的idx会不会超过整个堆栈的剩余的长度 */
     api_check(L, idx <= L->stack_last - (func + 1), "new top too large");
+	/* 将从[func+1, func+1+idx]这部分的堆栈内容设置为nil */
     while (L->top < (func + 1) + idx)
       setnilvalue(L->top++);
+    /* 更新堆栈指针，如果idx > 0，那么就是func+1+idx */
     L->top = (func + 1) + idx;
   }
   else {
+    /* 
+    ** 进入这个分支，说明idx < 0，这个时候要检查新的堆栈指针设置之后不能小于
+    ** 当前函数的地址，必须大于或者等于当前函数指针。
+    */
     api_check(L, -(idx+1) <= (L->top - (func + 1)), "invalid new top");
     L->top += idx+1;  /* 'subtract' index (index is negative) */
   }
@@ -605,8 +624,8 @@ LUA_API const char *lua_pushfstring (lua_State *L, const char *fmt, ...) {
 ** 2. 如果是带有upvalue的c closure，那么需要创建一个CClosure对象，并
 **    将函数指针保存到CClosure对象中，以及将该函数的所有upvalue也存放
 **    到CClosure对象的upvalue数组成员中，然后将CClosure对象压入到该函数
-**    第一个upvalue所在的堆栈位置（此时也就是栈顶），由于原先存放在堆栈中
-**    的upvalue都已经存放到CClosure对象中了，因此覆盖也没关系。
+**    第一个upvalue所在的堆栈位置（此时也就是堆栈的第一个元素），由于原先
+**    存放在堆栈中的upvalue都已经存放到CClosure对象中了，因此覆盖也没关系。
 */
 LUA_API void lua_pushcclosure (lua_State *L, lua_CFunction fn, int n) {
   lua_lock(L);
@@ -687,9 +706,22 @@ LUA_API int lua_pushthread (lua_State *L) {
 */
 
 
+/* 
+** auxgetstr()函数用于从table t中取出键值为k的value对象，并将该对象压入堆栈，
+** 并更新堆栈指针+1，然后返回该value对象的类型
+*/
 static int auxgetstr (lua_State *L, const TValue *t, const char *k) {
   const TValue *slot;
+  
+  /* 根据k来创建table的键值对象 */
   TString *str = luaS_new(L, k);
+  /* 
+  ** 首先尝试直接从table t中获取键值为k的value对象，如果获取成功且value对象不为nil，
+  ** 则存放入slot中，之后将slot中的内容压入堆栈顶部，并更新堆栈指针。如果获取失败或者
+  ** 获取到的value对象为nil，则先将键值对象str压入堆栈，并更新堆栈指针，然后由于之前
+  ** 获取到的value对象为nil或者获取失败（t不是table类型），这个时候调用luaV_finishget()
+  ** 尝试用table的元表中进行获取，结果也会压入堆栈。
+  */
   if (luaV_fastget(L, t, str, slot, luaH_getstr)) {
     setobj2s(L, L->top, slot);
     api_incr_top(L);
@@ -700,6 +732,8 @@ static int auxgetstr (lua_State *L, const TValue *t, const char *k) {
     luaV_finishget(L, t, L->top - 1, L->top - 1, slot);
   }
   lua_unlock(L);
+
+  /* 返回从table t中获取的然后被压入堆栈的value对象的类型 */
   return ttnov(L->top - 1);
 }
 
@@ -721,6 +755,12 @@ LUA_API int lua_gettable (lua_State *L, int idx) {
 }
 
 
+/*
+** lua_getfield()函数首先调用index2addr()返回索引值idx对应的table的内存地址，
+** 然后调用auxgestr()函数从上面这个table中获取键值为k对应的value对象，并将这个
+** value对象压入堆栈，并返回这个value对象的类型。执行完lua_getfield()之后，位于
+** 堆栈顶部的元素就是从table中获取到的value对象。
+*/
 LUA_API int lua_getfield (lua_State *L, int idx, const char *k) {
   lua_lock(L);
   return auxgetstr(L, index2addr(L, idx), k);
@@ -792,7 +832,7 @@ LUA_API void lua_createtable (lua_State *L, int narray, int nrec) {
   lua_lock(L);
   /* luaH_new()函数会创建一个空的lua table */
   t = luaH_new(L);
-  /* 将新创建的表压入堆栈，并更新栈顶指针 */
+  /* 将新创建的表压入堆栈，并更新堆栈指针 */
   sethvalue(L, L->top, t);
   api_incr_top(L);
   /*
@@ -854,7 +894,8 @@ LUA_API int lua_getuservalue (lua_State *L, int idx) {
 */
 /*
 ** t其实是一个table(可以根据auxsetstr()被调用的上下文得知)，这个函数其实就是将
-** 位于堆栈顶部的value对象保存到t这个table中，对应的键值为k这个字符串。
+** 位于堆栈顶部的value对象保存到t这个table中，对应的键值为k这个字符串。将位于
+** 堆栈顶部的value对象存入table之后，会将该value对象弹出堆栈，也就是L->top会减1。
 */
 static void auxsetstr (lua_State *L, const TValue *t, const char *k) {
   const TValue *slot;
@@ -872,10 +913,20 @@ static void auxsetstr (lua_State *L, const TValue *t, const char *k) {
   lua_unlock(L);  /* lock done by caller */
 }
 
-
+/*
+** lua_setglobal()函数用于将堆栈最顶部元素以name为键值存放到_G表中，堆栈最顶部元素
+** 加入到_G之后就会从堆栈中弹出。
+*/
 LUA_API void lua_setglobal (lua_State *L, const char *name) {
+  /* 获取全局唯一的注册表，注册表就是一个table */
   Table *reg = hvalue(&G(L)->l_registry);
   lua_lock(L);  /* unlock done in 'auxsetstr' */
+  /*
+  ** luaH_getint(reg, LUA_RIDX_GLOBALS)用于从全局注册表中取出下标为LUA_RIDX_GLOBALS
+  ** 的value对象，这个value对象其实是一个表_G，它掌控了整个全局环境，保存了lua语言中
+  ** 几乎所有的全局函数和变量。_G在初始情况是只包含lua程序库的函数和变量，lua程序中
+  ** 定义的全局函数和变量会自动加入到_G中，而局部函数和变量不会这样做。
+  */
   auxsetstr(L, luaH_getint(reg, LUA_RIDX_GLOBALS), name);
 }
 
@@ -893,6 +944,7 @@ LUA_API void lua_settable (lua_State *L, int idx) {
 /*
 ** lua_setfield()就是将位于堆栈顶部的value对象，以k这个字符串为键值，
 ** 存放到idx对应的table中，idx是table在堆栈中的索引，通过idx可以获取到table。
+** 当位于堆栈顶部的value对象存入table之后，会被弹出堆栈。
 */
 LUA_API void lua_setfield (lua_State *L, int idx, const char *k) {
   lua_lock(L);  /* unlock done in 'auxsetstr' */

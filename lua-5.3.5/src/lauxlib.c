@@ -1019,7 +1019,7 @@ LUALIB_API void luaL_openlib (lua_State *L, const char *libname,
 ** function gets the 'nup' elements at the top as upvalues.
 ** Returns with only the table at the stack.
 */
-/* luaL_setfuncs()用于将待注册的函数保存到lua表以及堆栈中。 */
+/* luaL_setfuncs()用于将待注册的函数保存到lua表中。 */
 LUALIB_API void luaL_setfuncs (lua_State *L, const luaL_Reg *l, int nup) {
   luaL_checkstack(L, nup, "too many upvalues");
   for (; l->name != NULL; l++) {  /* fill the table with given functions */
@@ -1040,7 +1040,8 @@ LUALIB_API void luaL_setfuncs (lua_State *L, const luaL_Reg *l, int nup) {
 	** luaL_newlib()这个宏就知道了。那么这里的意思就是将上面刚刚压入堆栈
 	** 的CClosure对象保存到这个table中，对应的键值为函数的名字。因为lua_setfiled()
 	** 会将位于堆栈顶部的对象(在这个上下文中就是函数的CClosure对象)以l->name(即函数名字)
-	** 为键值保存到用于存放待注册函数的table中。
+	** 为键值保存到用于存放待注册函数的table中。当函数对应的CClosure对象保存到table之后，
+	** 这个对象就会从栈顶弹出，此时位于堆栈最顶部的元素就是那个table了。
 	*/
     lua_setfield(L, -(nup + 2), l->name);
   }
@@ -1057,14 +1058,59 @@ LUALIB_API void luaL_setfuncs (lua_State *L, const luaL_Reg *l, int nup) {
 ** ensure that stack[idx][fname] has a table and push that table
 ** into the stack
 */
+/* 
+** luaL_getsubtable()用于判断在堆栈索引值为idx处是否有一个名字为fname的table，
+** 如果这个table存在，那么在将这个table压入堆栈顶部的之后就直接返回；如果这个地方
+** 没有符合条件的table，那么就在创建一个table，并压入堆栈两次，然后将这个table以fname
+** 为键值加入到这个堆栈索引值为idx处的table中，成为一个子table。加入完成之后，这个子table
+** 就会被弹出堆栈，因为已经加入到了其他table中，就没必要在放在堆栈中占位置了。由于新建的
+** 这个table之前被压入堆栈两次，因此这次弹出之后，这个table仍处于堆栈顶部。这样就保证了
+** if和else两个分支执行的效果是一样的，那就是目标的table被压入堆栈顶部。
+*/
 LUALIB_API int luaL_getsubtable (lua_State *L, int idx, const char *fname) {
+  /* 
+  ** 从堆栈索引值为idx出的table中取出键值为fname的value对象，判断这个value是不是
+  ** 一个table，如果是的话，在将这个table压入堆栈顶部的之后，就返回了；如果不是一个
+  ** table，那么需要在堆栈顶部创建一个新的table，然后将这个位于堆栈顶部的table以fname
+  ** 为键值加入到堆栈索引值为idx处的那个table中，成为一个子table。
+  */
   if (lua_getfield(L, idx, fname) == LUA_TTABLE)
     return 1;  /* table already there */
   else {
+    /*
+    ** lua_pop()这个宏其实就是调用lua_settop()函数来重新设置堆栈指针L->top，
+    ** 以参数1来调用lua_pop()的效果就是将堆栈指针L->top减1，即将当前堆栈最顶部
+    ** 元素弹出堆栈，L->top指向了该位置。L->top指向的位置是没有存入有效数据的，
+    ** 且是下一次将存入有效数据的位置。
+    */
     lua_pop(L, 1);  /* remove previous result */
+    /*
+    ** lua_absindex()用于取堆栈索引值得绝对值。这个绝对值并不完全和数学上的绝对值一样，
+    ** 是具有上下文含义的绝对值，如下：
+    ** 1.如果idx大于0，那么直接返回该值；
+    ** 2.如果idx小于等于LUA_REGISTRYINDEX（一个负值），那么也直接返回该值；
+    ** 3.如果idx在(LUA_REGISTRYINDEX,0]之间，则返回对应的绝对值。
+    */
     idx = lua_absindex(L, idx);
+  
+    /* 创建一个新的table，并将这个table压入堆栈，此时这个table是堆栈最顶部元素 */
     lua_newtable(L);
+	
+    /* 
+    ** 上面执行“lua_newtable(L);”语句之后新创建的table就在堆栈最顶部了，下面即将执行的
+    ** 语句“lua_pushvalue(L, -1);”会将已经位于堆栈顶部的这个table再一次压入堆栈。
+    ** 这里为什么要这样做呢？因为luaL_getsubtable()这个函数的最终目的就是将键值fname对应的
+    ** 这个table压入堆栈顶部。上面这句和下面这句的结果是会导致新创建的这个table会压入堆栈
+    ** 顶部和次顶部，因为下面的lua_setfield()函数会将位于栈顶的新建的table加入父table之后，
+    ** 将新建的table弹出堆栈，这个时候位于次顶部的table就变成了堆栈最顶部元素。这样就和
+    ** 该函数第一条语句完成了一样的功能了。
+    */
     lua_pushvalue(L, -1);  /* copy to be left at top */
+	
+	/* 
+	** 将上面新创建的table以fname为键值，加入到堆栈索引值为idx的那个table中，
+	** 成为一个子table。然后新创建的这个子table会被弹出堆栈。
+	*/
     lua_setfield(L, idx, fname);  /* assign new table to field */
     return 0;  /* false, because did not find table there */
   }
@@ -1077,11 +1123,52 @@ LUALIB_API int luaL_getsubtable (lua_State *L, int idx, const char *fname) {
 ** if 'glb' is true, also registers the result in the global table.
 ** Leaves resulting module on the top.
 */
+/* 
+** luaL_requiref()函数的作用就是将模块modname对应的table加入到_LOADED和_G
+** 这两个table中，成为它们的子table。
+*/
 LUALIB_API void luaL_requiref (lua_State *L, const char *modname,
                                lua_CFunction openf, int glb) {
+  /*
+  ** 判断在堆栈索引值为LUA_REGISTRYINDEX处的table中有没有一个名为LUA_LOADED_TABLE("_LOADED")的子table，
+  ** 如果有的话，那么在将这个table压入堆栈顶部的之后就返回了；如果没有的话，就创建一个新的table，并压入
+  ** 堆栈两次，然后将位于堆栈顶部table以键值为LUA_LOADED_TABLE添加进堆栈索引值为LUA_REGISTRYINDEX的table中，
+  ** 成为一个子table。加入成功之后，子table就会被弹出堆栈，但由于子table之前被压入两次，因此此时位于堆栈
+  ** 最顶部的元素仍然是这个table。执行完这个语句后，堆栈最顶部的元素就是名为"_LOADED"的table。
+  */
   luaL_getsubtable(L, LUA_REGISTRYINDEX, LUA_LOADED_TABLE);
+  /* 
+  ** 我们知道，执行完上面的语句后，堆栈最顶部的元素就是名为"_LOADED"的table，
+  ** lua_getfield()从idx为-1（idx为-1，对应的就是堆栈最顶部元素）的table（就是
+  ** 上面的"_LOADED" table）中获取键值为modname对应的table，因为lua在引入一个库时，
+  ** 是用一个库（即模块）级别的table来存放库里面的函数信息的，因此这里就是从堆栈顶部的
+  ** 这个"_LOADED" table中获取库对应的那个table，键值就是模块名字（库名字）。执行完下面
+  ** 这条语句之后，位于堆栈顶部的元素就是库modname对应的那个table了(如果有这个库的话)。
+  */
   lua_getfield(L, -1, modname);  /* LOADED[modname] */
   if (!lua_toboolean(L, -1)) {  /* package not already loaded? */
+    /*
+    ** 进入这个分支说明名字为modname的模块还没有加载过，那么这里就准备将这个module进行加载。
+    ** 流程如下：
+    ** 1. 由于库之前没有进行加载，那么这个时候位于栈顶的那个table就不作数了，这里就调用lua_pop()
+    **    将其弹出堆栈；
+    ** 2. 调用lua_pushcfunction()将modname对应的库加载函数压入堆栈顶部；
+    ** 3. 调用lua_pushstring()将模块名字modname压入堆栈顶部，作为库加载函数的参数；
+    ** 4. 由于模块对应的加载函数openf已经处于此堆栈顶部了，因此可以调用该函数来
+    **    执行加载库的操作了，模块加载函数执行的结果会存放在堆栈顶部，结果其实就是模块对应的table。
+    **    以math库为例，其库加载函数luaopen_math()的执行结果就是会在堆栈顶部创建一个包含了math库函数
+    **    及常量的table。lua_call(L, 1, 1)完成的就是调用库的加载函数的功能。执行完lua_call()语句后，
+    **    被加载模块对应的table就在堆栈顶部了。
+    ** 5. 语句“lua_pushvalue(L, -1);”的作用就是将位于堆栈顶部的库对应的table再一次压入堆栈，这个时候
+    **    堆栈最顶部和次顶部的就都是库对应的table了。
+    ** 6. 语句“lua_setfield(L, -3, modname);”的作用就是将位于堆栈顶部的库对应的table以modname为键值
+    **    添加进"_LOADED"这个table中，作为其的一个子table，并将最顶部的table弹出堆栈。语句中的“-3”
+    **    就是"_LOADED"table的索引，为什么它的索引是-3呢？我们知道L->top指向的是堆栈中下一个即将存放
+    **    内容的地址，L->top - 1就是堆栈最顶部的元素，L->top - 2就是次顶部元素，上面的第4和5步会将库
+    **    对应的table加入堆栈两次，分别位于堆栈最顶部和次顶部，该函数第一条语句
+    **    “luaL_getsubtable(L, LUA_REGISTRYINDEX, LUA_LOADED_TABLE);”执行完的时候，"_LOADED"z table就在
+    **    当时的堆栈最顶部，也就是这个时候的(L->top - 3)这个位置。
+    */
     lua_pop(L, 1);  /* remove field */
     lua_pushcfunction(L, openf);
     lua_pushstring(L, modname);  /* argument to open function */
@@ -1089,11 +1176,31 @@ LUALIB_API void luaL_requiref (lua_State *L, const char *modname,
     lua_pushvalue(L, -1);  /* make copy of module (call result) */
     lua_setfield(L, -3, modname);  /* LOADED[modname] = module */
   }
+
+  /* 
+  ** 这里调用以参数-2来调用lua_remove()，目的是将位于堆栈次顶部的那个"_LOADED" table
+  ** 从堆栈中移除，因为上面的流程中已经将modename对应的table添加到"_LOADED" table中了，
+  ** 或者modename对应的table本身就应经在"_LOADED" table中了，因此可以将"_LOADED" table
+  ** 从堆栈中移除了，节省堆栈空间。这里的-2其实就是此时"_LOADED" table在堆栈中的索引值，
+  ** 即"_LOADED" table位于堆栈次顶部，modname对应的table才位于堆栈顶部。
+  */
   lua_remove(L, -2);  /* remove LOADED table */
+  
+  /*
+  ** 如果glb为1的话，那么就将该module对应的table存放全局的table中，即_G这个table。
+  ** “lua_pushvalue(L, -1);”这条语句的作用是将要加入_G表的那个module对应的table
+  ** 压入堆栈顶部，因为lua_setglobal()函数中会将位于堆栈顶部的table以modname
+  ** 为键值加入_G中，所以要提前将module对应的table写入堆栈顶部，另外，在将table加入
+  ** _G之后会将这个table从堆栈中弹出。
+  */
   if (glb) {
     lua_pushvalue(L, -1);  /* copy of module */
     lua_setglobal(L, modname);  /* _G[modname] = module */
   }
+  /* 
+  ** 程序执行到这里，位于堆栈顶部的元素仍然是模块modname对应的table，这个位于堆栈顶部的table
+  ** 在上层调用者中会将其从堆栈顶部中弹出。参考luaL_openlibs()。
+  */
 }
 
 
