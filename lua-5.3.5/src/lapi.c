@@ -1014,19 +1014,39 @@ LUA_API void lua_rawsetp (lua_State *L, int idx, const void *p) {
   lua_unlock(L);
 }
 
-
+/* 
+** lua_setmetatable()函数会将堆栈顶部的元素（可能是table，可能是nil）作为
+** 堆栈索引值是objindex的value对象的元表，设置完成后，将堆栈顶部的元素弹出堆栈。
+*/
 LUA_API int lua_setmetatable (lua_State *L, int objindex) {
   TValue *obj;
   Table *mt;
   lua_lock(L);
   api_checknelems(L, 1);
+  /* 从堆栈索引值objindex中取出对应的value对象 */
   obj = index2addr(L, objindex);
+  /*
+  ** 判断堆栈顶部的元素是不是nil对象，如果是则先将元表指针设置为NULL，
+  ** 如果堆栈顶部的元素不是nil对象，那么断言堆栈顶部的元素是一个table，
+  ** 因为从该函数调用的上下文可以知道，此时位于堆栈顶部的元素应该是一个table。
+  ** 并将该table作为元表使用。
+  */
   if (ttisnil(L->top - 1))
     mt = NULL;
   else {
     api_check(L, ttistable(L->top - 1), "table expected");
     mt = hvalue(L->top - 1);
   }
+
+  /*
+  ** 判断从堆栈索引值objindex中取出来的value对象的类型，
+  ** 1. 如果该value对象的类型是table，那么就将mt作为该table的元表。
+  ** 2. 如果该value对象的类型是userdata，即指针类型，那么也将mt作为该对象的元表。
+  ** 3. 如果该value对象的类型是非上述两种类型，那么将mt作为全局状态信息中obj所属类型的元表。
+  ** 从这里的实现可以看出，除了table、userdata之外的其他类型，每种类型的所有对象共享一个元表，
+  ** 也就是说，所有字符串对象共享一个元表，所有整型共享一个元表，所有浮点型共享一个元表。
+  ** 对于table、userdata类型，则每个table对象都有自己的元表，每个userdata对象都有自己的元表。
+  */
   switch (ttnov(obj)) {
     case LUA_TTABLE: {
       hvalue(obj)->metatable = mt;
@@ -1049,6 +1069,11 @@ LUA_API int lua_setmetatable (lua_State *L, int objindex) {
       break;
     }
   }
+  
+  /*
+  ** 上述switch语句块中已经将堆栈顶部的元素（可能为nil，可能为一个table）设置为堆栈索引值是
+  ** objindex的value对象的元表了，因此可能将其弹出堆栈，节省堆栈空间。
+  */
   L->top--;
   lua_unlock(L);
   return 1;

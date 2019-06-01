@@ -1565,21 +1565,71 @@ static const luaL_Reg strlib[] = {
   {NULL, NULL}
 };
 
-
+/* 创建string对象的元表 */
 static void createmetatable (lua_State *L) {
+  /* 创建一个hash表部分的大小为1的table，并将这个table压入堆栈顶部 */
   lua_createtable(L, 0, 1);  /* table to be metatable for strings */
+  
+  /*
+  ** 往堆栈顶部压入一个空字符串字面值，这个dummy string的作用是作为临时字符串对象，借助
+  ** 这个临时字符串对象，往全局状态信息中添加所有字符串对象共有的元表。
+  */
   lua_pushliteral(L, "");  /* dummy string */
+
+  /*
+  ** 将索引值为-2的table再次压入堆栈顶部，索引值为-2的table就是该函数一开始创建的
+  ** 那个table，执行完下面这步之后，在(L->top - 1)和(L->top - 3)两个地方都存放了指向这个table的
+  ** 地址。注意因为堆栈中存放的Value对象保存的是指向这个table的指针，因此这两个地方存放的都是
+  ** 这个table对象的指针，指向同一个table。
+  */
   lua_pushvalue(L, -2);  /* copy table */
+
+  /*
+  ** 将位于堆栈顶部的table设置为字符串对象的元表，此时索引值为-2的value对象就是上面那个空字符串。
+  ** 同时将位于堆栈顶部的table弹出堆栈，因为table已经设置作为string对象的元表了，因此可以从堆栈中
+  ** 弹出了。
+  */
   lua_setmetatable(L, -2);  /* set table as metatable for strings */
+
+  /*
+  ** 上面的语句将堆栈顶部的table设置为所有string对象的共有的元表之后，就将该table从堆栈中弹出了，
+  ** 因此这个时候位于堆栈顶部的元素就是这个空字符串了（即dummy string）。我们知道，所有的string
+  ** 对象都是共享同一个元表的，其元表已经记录在全局状态信息中，因此上述用来添加字符串共享元表的
+  ** 那个临时空字符串（即dummy string）就无用了，可以从堆栈中弹出了。
+  */
   lua_pop(L, 1);  /* pop dummy string */
+
+  /* 
+  ** 程序执行到这里时，位于堆栈顶部的是函数开头创建的那个table（堆栈索引值为-1），位于堆栈次顶部的
+  ** 是存放了所有string库函数信息的那个table（库级别的table），这个可以从该函数（createmetatable()）
+  ** 的调用函数luaopen_string()中看到。因此下面这条语句是将存放了string库函数信息的table再一次
+  ** 压入堆栈顶部。
+  */
   lua_pushvalue(L, -2);  /* get string library */
+  /*
+  ** 下面这条语句是将存放了string库函数信息的table以"__index"为键值存入到函数开头创建的那个table中，
+  ** 从上面的流程我们知道，开头创建的那个table其实是作为所有string对象的共享元表而存在的。因此这里
+  ** 就是想存放了所有string库函数信息的table以"__index"为键值设置到所有string对象共享的元表中。
+  ** 设置完毕之后，在函数lua_setfield()中还会将存放了所有string库函数信息的table从堆栈顶部弹出，之后
+  ** 位于堆栈顶部的就是开头创建的那个作为string对象共享元表而存在的table了。
+  */
   lua_setfield(L, -2, "__index");  /* metatable.__index = string */
+
+  /*
+  ** 调用lua_pop()将该函数开头创建的那个string对象的共享元表从堆栈中弹出，因为这个共享元表已经存放到
+  ** 全局状态信息中了，可以从堆栈中弹出了。
+  */
   lua_pop(L, 1);  /* pop metatable */
 }
 
 
 /*
 ** Open string library
+*/
+/* 
+** 引入string库，luaopen_string()是string库的加载函数，执行完
+** luaopen_string()函数之后，位于堆栈最顶部的元素就是那个存放了
+** 所有string相关函数的table。
 */
 LUAMOD_API int luaopen_string (lua_State *L) {
   luaL_newlib(L, strlib);

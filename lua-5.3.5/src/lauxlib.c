@@ -586,17 +586,25 @@ LUALIB_API void luaL_pushresultsize (luaL_Buffer *B, size_t sz) {
 }
 
 
+/* 
+** luaL_addvalue()函数用于将位于堆栈顶部的元素转换成相应的字符串（不改变堆栈顶部的内容），
+** 然后追加到buffer的缓冲区中。
+*/
 LUALIB_API void luaL_addvalue (luaL_Buffer *B) {
   lua_State *L = B->L;
   size_t l;
+  
+  /* 将堆栈顶部的元素转换为相应的字符串，返回值是字符串的首地址，l存放了该字符串的长度 */
   const char *s = lua_tolstring(L, -1, &l);
   if (buffonstack(B))
     lua_insert(L, -2);  /* put value below buffer */
+  /* 将上面的到的字符串追加到buffer的缓冲区中，s是字符串首地址，l是字符串长度 */
   luaL_addlstring(B, s, l);
   lua_remove(L, (buffonstack(B)) ? -2 : -1);  /* remove value */
 }
 
 
+/* 初始化buffer对象B */
 LUALIB_API void luaL_buffinit (lua_State *L, luaL_Buffer *B) {
   B->L = L;
   B->b = B->initb;
@@ -604,9 +612,20 @@ LUALIB_API void luaL_buffinit (lua_State *L, luaL_Buffer *B) {
   B->size = LUAL_BUFFERSIZE;
 }
 
-
+/* luaL_buffinitsize()函数初始化buffer对象，并根据sz申请内部缓冲区，然后返回可写缓冲区的首地址 */
 LUALIB_API char *luaL_buffinitsize (lua_State *L, luaL_Buffer *B, size_t sz) {
+  /* 初始化buffer对象B */
   luaL_buffinit(L, B);
+
+  /* 
+  ** luaL_prepbuffsize()函数将在buffer中取出一个长度为sz的小buffer，并将该
+  ** 小buffer的首地址返回到上层。如果buffer中空闲空间的长度大于sz，那么可以直接
+  ** 返回剩余空间的首地址给上层调用者；如果buffer中的空闲空间长度小于sz，那么这个
+  ** 时候就需要重新分配一个大一点的buffer或者扩充原buffer，如果是重新分配buffer的话，
+  ** 需要将原来buffer中的内容拷贝到新buffer中，然后返回新buffer或扩充后的buffer中的
+  ** 剩余空间的首地址给上层调用者。新buffer的长度考虑到了sz的长度，因此创建的新buffer
+  ** 中的剩余空间大小肯定不小于sz。
+  */
   return luaL_prepbuffsize(B, sz);
 }
 
@@ -1035,14 +1054,14 @@ LUALIB_API void luaL_setfuncs (lua_State *L, const luaL_Reg *l, int nup) {
     ** 存放在堆栈中的upvalue都弹出堆栈。
     */
     lua_pushcclosure(L, l->func, nup);  /* closure with those upvalues */
-	/* 
-	** L->top -(nup+2)其实就是存放待注册函数的table的地址，这个地方参考
-	** luaL_newlib()这个宏就知道了。那么这里的意思就是将上面刚刚压入堆栈
-	** 的CClosure对象保存到这个table中，对应的键值为函数的名字。因为lua_setfiled()
-	** 会将位于堆栈顶部的对象(在这个上下文中就是函数的CClosure对象)以l->name(即函数名字)
-	** 为键值保存到用于存放待注册函数的table中。当函数对应的CClosure对象保存到table之后，
-	** 这个对象就会从栈顶弹出，此时位于堆栈最顶部的元素就是那个table了。
-	*/
+    /* 
+    ** L->top -(nup+2)其实就是存放待注册函数的table的地址，这个地方参考
+    ** luaL_newlib()这个宏就知道了。那么这里的意思就是将上面刚刚压入堆栈
+    ** 的CClosure对象保存到这个table中，对应的键值为函数的名字。因为lua_setfiled()
+    ** 会将位于堆栈顶部的对象(在这个上下文中就是函数的CClosure对象)以l->name(即函数名字)
+    ** 为键值保存到用于存放待注册函数的table中。当函数对应的CClosure对象保存到table之后，
+    ** 这个对象就会从栈顶弹出，此时位于堆栈最顶部的元素就是那个table了。
+    */
     lua_setfield(L, -(nup + 2), l->name);
   }
   /* 
@@ -1130,11 +1149,12 @@ LUALIB_API int luaL_getsubtable (lua_State *L, int idx, const char *fname) {
 LUALIB_API void luaL_requiref (lua_State *L, const char *modname,
                                lua_CFunction openf, int glb) {
   /*
-  ** 判断在堆栈索引值为LUA_REGISTRYINDEX处的table中有没有一个名为LUA_LOADED_TABLE("_LOADED")的子table，
-  ** 如果有的话，那么在将这个table压入堆栈顶部的之后就返回了；如果没有的话，就创建一个新的table，并压入
-  ** 堆栈两次，然后将位于堆栈顶部table以键值为LUA_LOADED_TABLE添加进堆栈索引值为LUA_REGISTRYINDEX的table中，
-  ** 成为一个子table。加入成功之后，子table就会被弹出堆栈，但由于子table之前被压入两次，因此此时位于堆栈
-  ** 最顶部的元素仍然是这个table。执行完这个语句后，堆栈最顶部的元素就是名为"_LOADED"的table。
+  ** 判断在堆栈索引值为LUA_REGISTRYINDEX处的table中有没有一个名为LUA_LOADED_TABLE("_LOADED")的
+  ** 子table，如果有的话，那么在将这个table压入堆栈顶部的之后就返回了；如果没有的话，就创建一个
+  ** 新的table，并压入堆栈两次，然后将位于堆栈顶部table以键值为LUA_LOADED_TABLE("_LOADED")添加进
+  ** 堆栈索引值为LUA_REGISTRYINDEX的table中，成为一个子table。加入成功之后，子table就会被弹出堆栈，
+  ** 但由于子table之前被压入两次，因此此时位于堆栈最顶部的元素仍然是这个table。执行完这个语句后，
+  ** 堆栈最顶部的元素就是名为"_LOADED"的table。
   */
   luaL_getsubtable(L, LUA_REGISTRYINDEX, LUA_LOADED_TABLE);
   /* 
@@ -1166,8 +1186,8 @@ LUALIB_API void luaL_requiref (lua_State *L, const char *modname,
     **    就是"_LOADED"table的索引，为什么它的索引是-3呢？我们知道L->top指向的是堆栈中下一个即将存放
     **    内容的地址，L->top - 1就是堆栈最顶部的元素，L->top - 2就是次顶部元素，上面的第4和5步会将库
     **    对应的table加入堆栈两次，分别位于堆栈最顶部和次顶部，该函数第一条语句
-    **    “luaL_getsubtable(L, LUA_REGISTRYINDEX, LUA_LOADED_TABLE);”执行完的时候，"_LOADED"z table就在
-    **    当时的堆栈最顶部，也就是这个时候的(L->top - 3)这个位置。
+    **    “luaL_getsubtable(L, LUA_REGISTRYINDEX, LUA_LOADED_TABLE);”执行完的时候，"_LOADED"z table
+    **    就在当时的堆栈最顶部，也就是这个时候的(L->top - 3)这个位置。
     */
     lua_pop(L, 1);  /* remove field */
     lua_pushcfunction(L, openf);

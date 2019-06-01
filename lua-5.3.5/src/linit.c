@@ -39,6 +39,7 @@
 ** these libs are loaded by lua.c and are readily available to any Lua
 ** program
 */
+/* lua启动过程中会加载的所有库，这些库在所有的lua程序中都可以使用 */
 static const luaL_Reg loadedlibs[] = {
   {"_G", luaopen_base},
   {LUA_LOADLIBNAME, luaopen_package},
