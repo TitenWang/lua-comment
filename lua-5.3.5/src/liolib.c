@@ -185,9 +185,19 @@ static FILE *tofile (lua_State *L) {
 ** before opening the actual file; so, if there is a memory error, the
 ** handle is in a consistent state.
 */
+/* newprefile()函数用于创建文件流对象，并为其设置元表 */
 static LStream *newprefile (lua_State *L) {
+  /* 执行完下面的这条语句之后，位于栈顶部的元素就是封装了LStream对象的userdata对象 */
   LStream *p = (LStream *)lua_newuserdata(L, sizeof(LStream));
   p->closef = NULL;  /* mark file handle as 'closed' */
+  /* 
+  ** 下面这条语句会从栈索引值为LUA_REGISTRYINDEX的table中获取键值为"FILE*"的value对象（其实是
+  ** io库文件流操作对应的元表），并将其压入栈顶部。同时将刚刚压入栈顶部的这个元表设置为上面
+  ** 那个封装了LStream对象的userdata对象的元表。设置完成之后，栈顶部元表会被弹出堆栈，封装了
+  ** LStream对象的userdata对象会成为新的栈顶部元素。
+  ** 注意：栈索引值为LUA_REGISTRYINDEX的table中键值为"FILE*"的value对象（其实是一个元表）是在
+  ** luaopen_io()中调用createmata()创建的，因此下面在从table中获取时正常情况下时能获取成功的。
+  */
   luaL_setmetatable(L, LUA_FILEHANDLE);
   return p;
 }
@@ -697,6 +707,7 @@ static int f_flush (lua_State *L) {
 /*
 ** functions for 'io' library
 */
+/* io库函数及其名字 */
 static const luaL_Reg iolib[] = {
   {"close", io_close},
   {"flush", io_flush},
@@ -716,6 +727,7 @@ static const luaL_Reg iolib[] = {
 /*
 ** methods for file handles
 */
+/* 文件操作方法及其名字 */
 static const luaL_Reg flib[] = {
   {"close", f_close},
   {"flush", f_flush},
@@ -729,12 +741,36 @@ static const luaL_Reg flib[] = {
   {NULL, NULL}
 };
 
-
+/* 为io库中的文件操作创建元表，注意不是为io库对应的那个库级别的table创建元表 */
 static void createmeta (lua_State *L) {
+  /*
+  ** 为io库中的文件操作创建一个元表，执行完下面if语句中的函数调用之后，
+  ** 位于栈顶部的就是作为io库中文件操作的那个元表，而io库对应的table则位于栈次顶部。
+  ** 这个对应io库中文件操作的元表会以"FILE*"为键值设置到栈索引值为LUA_REGISTRYINDEX
+  ** 的table中，作为其子table。执行完下面这条语句之后，位于栈顶部的是这个元表。
+  */
   luaL_newmetatable(L, LUA_FILEHANDLE);  /* create metatable for file handles */
+
+  /*
+  ** 将此时位于栈顶部的对应io库中文件操作的元表再压入堆栈，执行完下面的语句之后，栈顶部和
+  ** 栈次顶部的元素就都是这个元表了。这里的-1其实就是栈顶部元素的栈索引值。
+  */
   lua_pushvalue(L, -1);  /* push metatable */
+
+  /* 
+  ** 将位于栈顶部的元表，以"__index"为键值设置到该元表自身中成为自己的一个子table，
+  ** 并将栈顶部的元表弹出，执行完下面这条语句之后栈顶部的元素仍然是上面创建的元表。
+  */
   lua_setfield(L, -2, "__index");  /* metatable.__index = metatable */
+
+  /* 将flib中定义的函数及其名字注册到位于栈顶部的对应于io库中文件操作的元表当中 */
   luaL_setfuncs(L, flib, 0);  /* add file methods to new metatable */
+
+  /* 
+  ** 程序执行到这里时，位于栈顶部的仍然是对应于io库中文件操作的元表，由于元表相关的
+  ** 操作都完成了，因此这里将其弹出堆栈。执行完下面的这条语句之后，位于堆栈顶部的就是
+  ** io库对应的那个table了。这可以从该函数的调用函数luaopen_io()中看到。
+  */
   lua_pop(L, 1);  /* pop new metatable */
 }
 
@@ -750,27 +786,70 @@ static int io_noclose (lua_State *L) {
   return 2;
 }
 
-
+/*
+** createstdfile()函数用于创建三个标准的文件句柄，即标准输入、标准输出和标准错误输出。
+** 同时将这三个文件句柄对应的文件流对象加入到io库级别的table中。而标准输入和标准输出
+** 对应的文件流对象还要加入到栈索引值为LUA_REGISTRYINDEX的table中，这可以从luaopen_io()
+** 函数实现中看出。
+*/
 static void createstdfile (lua_State *L, FILE *f, const char *k,
                            const char *fname) {
+  /* 
+  ** newprefile()函数用于创建文件流对象，并为其设置元表。其实，该元表是设置到
+  ** 封装了文件流对象的userdata对象中的。执行完下面这条语句之后，位于栈顶部的
+  ** 元素就是封装了文件流对象的userdata对象。
+  */
   LStream *p = newprefile(L);
+  /* 初始化文件流对象 */
   p->f = f;
   p->closef = &io_noclose;
+
+  /* 
+  ** 当k不等于NULL时，还需要将位于栈顶部（栈索引值为-1，即对应L->top - 1）的封装了
+  ** 文件流对象的userdata对象以k为键值添加到索引值为LUA_REGISTRYINDEX的表中。
+  */
   if (k != NULL) {
     lua_pushvalue(L, -1);
     lua_setfield(L, LUA_REGISTRYINDEX, k);  /* add file to registry */
   }
+
+  /*
+  ** 程序执行完这里时，位于栈顶部的元素就是那个封装了文件流对象的userdata对象，
+  ** 下面这条语句会将该userdata对象以fname为键值添加到io库对应的table中。添加
+  ** 成功后将该userdata对象弹出栈顶。
+  */
   lua_setfield(L, -2, fname);  /* add file to module */
+  /* 程序执行到这里，位于栈顶部的元素就是io库对应的那个table */
 }
 
 
+/* 
+** 引入io操作库，执行完luaopen_io()函数之后，位于堆栈最顶部的元素就是那个存放了
+** 所有io库函数及常量的table。
+*/
 LUAMOD_API int luaopen_io (lua_State *L) {
+  /* 
+  ** 将iolib中定义的函数及其名字存入一个table中，这个table是库级别的，
+  ** 即一个库对应一个table。执行完luaL_newlib()之后，这个table就位于栈
+  ** 最顶部。
+  */
   luaL_newlib(L, iolib);  /* new module */
+  /*
+  ** 为io库中的文件操作创建一个元表，注意不是为io库对应的那个库级别的table创建元表。
+  ** 这个对应于io库中文件操作的元表会以"FILE*"为键值设置到栈索引值为LUA_REGISTRYINDEX
+  ** 的table中，成为其子table。
+  */
   createmeta(L);
+  /*
+  ** 程序执行到这里，位于栈顶部的是io库对应的那个库级别的table。
+  ** 下面的三条语句会分别将三个常量文件句柄（标准输入、标准输出和标准错误输出）添加到上面的table中。
+  ** 而标准输入和标准输出还会添加到栈索引值为LUA_REGISTRYINDEX的table中。
+  */
   /* create (and set) default files */
   createstdfile(L, stdin, IO_INPUT, "stdin");
   createstdfile(L, stdout, IO_OUTPUT, "stdout");
   createstdfile(L, stderr, NULL, "stderr");
+  /* 程序执行到这里，位于栈顶部的元素就是io库对应的那个table */
   return 1;
 }
 

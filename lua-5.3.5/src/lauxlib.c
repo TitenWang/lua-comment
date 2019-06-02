@@ -295,20 +295,57 @@ LUALIB_API int luaL_execresult (lua_State *L, int stat) {
 ** Userdata's metatable manipulation
 ** =======================================================
 */
-
+/* 创建userdata对象的元表 */
 LUALIB_API int luaL_newmetatable (lua_State *L, const char *tname) {
+  /*
+  ** 从栈索引值为LUA_REGISTRYINDEX的table中获取键值内容为tname的value对象，
+  ** 如果value对象不为nil，说明以tname为键的键值对已经存在了。luaL_getmetatable()
+  ** 其实是一个宏，对应的是调用了lua_getfield()。lua_getfield()函数会将对应于
+  ** tname的value对象压入栈顶部。
+  */
   if (luaL_getmetatable(L, tname) != LUA_TNIL)  /* name already in use? */
     return 0;  /* leave previous value on top, but return 0 */
+
+  /*
+  ** 这个地方为什么要将此时位于栈顶的元素弹出堆栈呢？理由如下：
+  ** 上面的if语句中调用了luaL_getmetatable()，这个宏实际是lua_getfield()，
+  ** 该函数会以tname为键值从栈索引值为LUA_REGISTRYINDEX的table中获取对应的
+  ** value对象，不管这个value对象是nil还是有效数据，都会将其压入堆栈。
+  ** 上面的if语句中判断如果该value对象是一个nil对象，那么程序就执行到这里了，
+  ** 由于下面的流程是重新创建一个元表，此时位于栈顶的那个nil对象就无用了，
+  ** 因此将其弹出栈顶。
+  */
   lua_pop(L, 1);
+
+  /* 这里创建一个普通的lua table，并压入栈顶部，这个table后续会被当做userdata对象的元表 */
   lua_createtable(L, 0, 2);  /* create metatable */
+
+  /* 将tname压入栈顶部，执行完下面这条语句之后，位于栈次顶部的就是上面刚刚创建的table */
   lua_pushstring(L, tname);
+
+  /*
+  ** 将位于栈顶部的tname以"__name"为键值设置到上面的table中，即那个即将被当做userdata对象的元表，
+  ** 函数实参里面的-2就是该元表的栈索引值（实际地址为L->top - 2）。同时将tname对象从栈中弹出。
+  */
   lua_setfield(L, -2, "__name");  /* metatable.__name = tname */
+  /*
+  ** 执行完上面这条语句后，位于栈顶的是userdata的元表，这里将该元表再次压入堆栈，此时栈顶部和栈次顶部
+  ** 存放的都是指向这个metatable的指针。为什么要在栈顶部和栈次顶部都存放一样的内容呢？因为这个metatable
+  ** 要设置到两个地方，一个是栈索引值为LUA_REGISTRYINDEX的表中，以键值为tname作为其子table，一个是
+  ** userdata对象中，这个设置会在函数调用的外层中进行。
+  */
   lua_pushvalue(L, -1);
   lua_setfield(L, LUA_REGISTRYINDEX, tname);  /* registry.name = metatable */
   return 1;
 }
 
 
+/* 
+** luaL_setmetatable()会从栈索引值为LUA_REGISTRYINDEX中获取键值为tname的value对象（其实是
+** 是一个元表），并将其压入栈顶部。同时将刚刚压入栈顶部的这个元表设置为此时位于栈次顶部（栈
+** 索引值为-2）的value对象的元表。设置完成之后，会将栈顶部的这个元表弹出堆栈，value对象成为
+** 新的栈顶部元素。
+*/
 LUALIB_API void luaL_setmetatable (lua_State *L, const char *tname) {
   luaL_getmetatable(L, tname);
   lua_setmetatable(L, -2);
@@ -458,42 +495,87 @@ LUALIB_API lua_Integer luaL_optinteger (lua_State *L, int arg,
 */
 
 /* userdata to box arbitrary data */
+/*
+** box对象，用于容纳任意的数据，box基于lua的userdata类型来实现。
+** box指向的容纳任意数据的缓冲区。
+** bsize则是该缓冲区的大小。
+*/
 typedef struct UBox {
   void *box;
   size_t bsize;
 } UBox;
 
-
+/* 调整box对象内部缓冲区的大小，box对象位于栈索引值为idx的userdata对象的内部缓冲区中 */
 static void *resizebox (lua_State *L, int idx, size_t newsize) {
   void *ud;
+  /* 获取用于申请内存的函数 */
   lua_Alloc allocf = lua_getallocf(L, &ud);
+  /* 
+  ** 从栈索引值为idx的userdata对象中获取box对象，box对象其实就是存放在
+  ** userdata对象内的缓冲区中。
+  */
   UBox *box = (UBox *)lua_touserdata(L, idx);
+  /* 申请box对象内部的缓冲区 */
   void *temp = allocf(ud, box->box, box->bsize, newsize);
   if (temp == NULL && newsize > 0) {  /* allocation error? */
     resizebox(L, idx, 0);  /* free buffer */
     luaL_error(L, "not enough memory for buffer allocation");
   }
+
+  /* 记录box对象的缓冲区及其大小。 */
   box->box = temp;
   box->bsize = newsize;
   return temp;
 }
 
 
+/* boxgc()函数是box对象的内存回收函数，即将box内部的缓冲区大小清零 */
 static int boxgc (lua_State *L) {
   resizebox(L, 1, 0);
   return 0;
 }
 
 
+/* newbox()用于创建一个新的box对象，其缓冲区大小由newsize指定 */
 static void *newbox (lua_State *L, size_t newsize) {
+
+  /* 
+  ** 基于lua的userdata类型来创建box对象，box对象存储在userdata内部缓冲区中，
+  ** 该缓冲区大小就是box对象的大小。box对象外层的userdata对象目前在栈的最顶部。
+  */
   UBox *box = (UBox *)lua_newuserdata(L, sizeof(UBox));
+  /* 对刚刚创建的box对象进行初始化 */
   box->box = NULL;
   box->bsize = 0;
+
+  /*
+  ** 为此时位于栈顶部的userdata对象创建一个元表，执行完下面if语句中的函数调用之后，
+  ** 位于栈顶部的就是即将作为userdata对象的那个元表，而userdata对象则位于栈次顶部。
+  ** 另外，这个userdata对象的元表也会以"LUABOX"为键值设置到栈索引值为LUA_REGISTRYINDEX
+  ** 的table中，作为其子table。
+  */
   if (luaL_newmetatable(L, "LUABOX")) {  /* creating metatable? */
+    /* 往栈顶部压入box对象的内存回收函数boxgc */
     lua_pushcfunction(L, boxgc);
+
+    /* 
+    ** 在执行下面这条语句之前，位于栈顶部的元素是box对象的内存回收函数，
+    ** 栈次顶部(栈索引值为-2)的元素就是上面创建的名为"LUABOX"的元表。
+    ** 这里将box对象的内存回收函数boxgc以键值为"__gc"设置到元表中。同时
+    ** 将boxgc函数从栈顶部弹出。执行完下面语句后，位于栈顶部的元素就是
+    ** 上面创建的名字为"LUABOX"的元表。
+    */
     lua_setfield(L, -2, "__gc");  /* metatable.__gc = boxgc */
   }
+
+  /*
+  ** 程序执行到这里，位于栈次顶部（索引值为-2）的元素就是封装有box对象的
+  ** userdata对象，这里将位于栈顶部的名为"LUABOX"的表设置为userdata对象
+  ** 的元表。
+  */
   lua_setmetatable(L, -2);
+
+  /* 调整box对象的大小 */
   return resizebox(L, -1, newsize);
 }
 

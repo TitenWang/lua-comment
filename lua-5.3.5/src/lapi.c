@@ -1385,15 +1385,17 @@ LUA_API void lua_setallocf (lua_State *L, lua_Alloc f, void *ud) {
   lua_unlock(L);
 }
 
-
+/* lua_newuserdata()用于创建一个userdata对象，同时将该对象压入堆栈并返回其内部缓冲区的首地址 */
 LUA_API void *lua_newuserdata (lua_State *L, size_t size) {
   Udata *u;
   lua_lock(L);
+  /* 创建一个缓冲区大小为size的Udate对象，并将该对象压入堆栈顶部 */
   u = luaS_newudata(L, size);
   setuvalue(L, L->top, u);
   api_incr_top(L);
   luaC_checkGC(L);
   lua_unlock(L);
+  /* 返回封装在Udata对象内部的缓冲区(块)的首地址 */
   return getudatamem(u);
 }
 

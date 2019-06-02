@@ -151,6 +151,7 @@ LUALIB_API void (luaL_requiref) (lua_State *L, const char *modname,
 #define luaL_dostring(L, s) \
 	(luaL_loadstring(L, s) || lua_pcall(L, 0, LUA_MULTRET, 0))
 
+/* 从栈索引值为LUA_REGISTRYINDEX的table中获取键值内容为n的value对象，并将value对象压入栈顶部 */
 #define luaL_getmetatable(L,n)	(lua_getfield(L, LUA_REGISTRYINDEX, (n)))
 
 #define luaL_opt(L,f,n,d)	(lua_isnoneornil(L,(n)) ? (d) : f(L,(n)))
@@ -211,11 +212,15 @@ LUALIB_API char *(luaL_buffinitsize) (lua_State *L, luaL_Buffer *B, size_t sz);
 ** after that initial structure).
 */
 
+/* lua中的文件处理句柄，用于索引封装了文件流的外层userdata的元表 */
 #define LUA_FILEHANDLE          "FILE*"
 
 
+/* lua中的文件流对象 */
 typedef struct luaL_Stream {
+  /* f是系统调用返回的文件指针 */
   FILE *f;  /* stream (NULL for incompletely created streams) */
+  /* 关闭文件流的函数指针 */
   lua_CFunction closef;  /* to close stream (NULL for closed streams) */
 } luaL_Stream;
 
