@@ -70,11 +70,19 @@ static void save (LexState *ls, int c) {
   b->buffer[luaZ_bufflen(b)++] = cast(char, c);
 }
 
-
+/* 
+** 初始化词法分析器，这里主要是将lua中的关键字保存到由所有thread共享的状态信息
+** global_State的fixedgc链表成员中。
+*/
 void luaX_init (lua_State *L) {
   int i;
+  /* 创建"_ENV"这个字符串字面值对应的TString对象 */
   TString *e = luaS_newliteral(L, LUA_ENV);  /* create env name */
+  
+  /* 将"_ENV"对应的字符串对象添加到global_State的fixedgc链表的头部 */
   luaC_fix(L, obj2gco(e));  /* never collect this name */
+  
+  /* 将lua中的关键字保存到由所有thread共享的状态信息global_State的fixedgc链表成员中。 */
   for (i=0; i<NUM_RESERVED; i++) {
     TString *ts = luaS_new(L, luaX_tokens[i]);
     luaC_fix(L, obj2gco(ts));  /* reserved words are never collected */

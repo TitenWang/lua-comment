@@ -418,6 +418,7 @@ LUA_API size_t lua_stringtonumber (lua_State *L, const char *s) {
 }
 
 
+/* 将栈索引值为idx对应的TValue对象转换为number，即实数，如果转换成功，则结果作为返回值，pisnum为1。*/
 LUA_API lua_Number lua_tonumberx (lua_State *L, int idx, int *pisnum) {
   lua_Number n;
   const TValue *o = index2addr(L, idx);
@@ -428,7 +429,7 @@ LUA_API lua_Number lua_tonumberx (lua_State *L, int idx, int *pisnum) {
   return n;
 }
 
-/* 将索引idx在堆栈中对应的值转换为integer */
+/* 将栈索引值为idx的TValue对象转换为integer，即整数，如果转换成功，则结果作为返回值，pisnum为1。 */
 LUA_API lua_Integer lua_tointegerx (lua_State *L, int idx, int *pisnum) {
   lua_Integer res;
   /* 取出idx在堆栈中对应的value值 */

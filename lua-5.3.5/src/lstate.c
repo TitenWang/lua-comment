@@ -60,6 +60,7 @@ typedef struct LX {
 /*
 ** Main thread combines a thread state and the global state
 */
+/* 主线程信息，包含了一个主线程自身的lua_State状态信息，还有一个全部thread共享的状态信息 */
 typedef struct LG {
   LX l;
   global_State g;
@@ -147,23 +148,49 @@ void luaE_shrinkCI (lua_State *L) {
   }
 }
 
-
+/* 初始化lua_State中的虚拟栈，一个lua_State代表的是一个thread的状态信息 */
 static void stack_init (lua_State *L1, lua_State *L) {
   int i; CallInfo *ci;
+
   /* initialize stack array */
+  /*
+  ** 为虚拟栈申请内存，虚拟栈中的一个栈单元存放的是TValue，因为TValue中可以
+  ** 存放Lua中所有可能的值，因此栈中可以存放任何值。虚拟栈其实就是一个元素类型
+  ** 为TValue的数组，除了和栈一样支持“先进后出”的特性之外，还可以像数组一样通过
+  ** 索引来访问和修改。
+  */
   L1->stack = luaM_newvector(L, BASIC_STACK_SIZE, TValue);
   L1->stacksize = BASIC_STACK_SIZE;
+  
+  /* 对申请了内存的虚拟栈进行初始化，即每个单元都写入nil值。 */
   for (i = 0; i < BASIC_STACK_SIZE; i++)
     setnilvalue(L1->stack + i);  /* erase new stack */
+
+  /* 
+  ** 由于一开始虚拟栈中没有写入任何的值，因此栈指针就等于栈起始地址，表示栈中
+  ** 下一个即将放入值得地方就是虚拟栈的起始地址。
+  */
   L1->top = L1->stack;
+
+  /* 计算整个虚拟栈的内存上限，要除去额外的5个栈单元 */
   L1->stack_last = L1->stack + L1->stacksize - EXTRA_STACK;
+  
   /* initialize first ci */
+  /* 初始化第一个函数调用信息 */
   ci = &L1->base_ci;
   ci->next = ci->previous = NULL;
   ci->callstatus = 0;
+  
+  /* 第一个函数调用信息中的函数指针存放在虚拟栈的内存起始单元。 */
   ci->func = L1->top;
+  
+  /* 往第一个函数调用信息中的函数指针对应的单元中写入nil对象 */
   setnilvalue(L1->top++);  /* 'function' entry for this 'ci' */
+
+  /* 默认栈至少LUA_MINSTACK个空闲的槽 */
   ci->top = L1->top + LUA_MINSTACK;
+
+  /* 写入函数调用链的头部，即CallInfo数组的第一个元素 */
   L1->ci = ci;
 }
 
@@ -208,13 +235,27 @@ static void init_registry (lua_State *L, global_State *g) {
 ** open parts of the state that may cause memory-allocation errors.
 ** ('g->version' != NULL flags that the state was completely build)
 */
+/* 初始化lua_State中可能会引起内存申请错误的部分 */
 static void f_luaopen (lua_State *L, void *ud) {
+  /* 获取由所有thread共享的状态信息 */
   global_State *g = G(L);
   UNUSED(ud);
+  /* 初始化lua_State中的虚拟栈 */
   stack_init(L, L);  /* init stack */
+
+  /* 初始化全局注册表 */
   init_registry(L, g);
+
+  /* 初始化string table及string cache */
   luaS_init(L);
+
+  /* 初始化元方法，主要是初始化event对应的名字，同时设置不让GC来回收这些字符串。*/
   luaT_init(L);
+
+  /* 
+  ** 初始化词法分析器，这里主要是将lua中的关键字保存到由所有thread共享的状态信息
+  ** global_State的fixedgc链表成员中。
+  */
   luaX_init(L);
   g->gcrunning = 1;  /* allow gc */
   g->version = lua_version(NULL);
@@ -226,6 +267,7 @@ static void f_luaopen (lua_State *L, void *ud) {
 ** preinitialize a thread with consistent values without allocating
 ** any memory (to avoid errors)
 */
+/* 初始化lua_State状态信息中那些不涉及内存申请和分配的部分。 */
 static void preinit_thread (lua_State *L, global_State *g) {
   G(L) = g;
   L->stack = NULL;
@@ -299,20 +341,38 @@ void luaE_freethread (lua_State *L, lua_State *L1) {
   luaM_free(L, l);
 }
 
-
+/* 初始化lua_State对象，参数中的f是内存申请函数 */
 LUA_API lua_State *lua_newstate (lua_Alloc f, void *ud) {
   int i;
   lua_State *L;
   global_State *g;
+  
+  /* 
+  ** 创建LG对象，LG对象是主线程信息，包含了一个主线程自身的lua_State状态信息，
+  ** 还有一个由全部thread共享的状态信息。
+  */
   LG *l = cast(LG *, (*f)(ud, NULL, LUA_TTHREAD, sizeof(LG)));
   if (l == NULL) return NULL;
+  
+  /* 获取主线程对应的lua_State状态信息 */
   L = &l->l.l;
+  
+  /* 获取全部线程共享的global_State状态信息 */
   g = &l->g;
   L->next = NULL;
+  
+  /* 设置类型 */
   L->tt = LUA_TTHREAD;
   g->currentwhite = bitmask(WHITE0BIT);
   L->marked = luaC_white(g);
+
+  /* 
+  ** 初始化lua_State状态信息中那些不涉及内存申请和分配的部分。涉及到内存操作的
+  ** 部分由下面的f_luaopen()来完成。
+  */
   preinit_thread(L, g);
+
+  /* 初始化全部线程共享的global_State状态信息。 */
   g->frealloc = f;
   g->ud = ud;
   g->mainthread = L;
@@ -337,6 +397,10 @@ LUA_API lua_State *lua_newstate (lua_Alloc f, void *ud) {
   g->gcpause = LUAI_GCPAUSE;
   g->gcstepmul = LUAI_GCMUL;
   for (i=0; i < LUA_NUMTAGS; i++) g->mt[i] = NULL;
+  /* 
+  ** 以保护模式来调用f_luaopen()函数，该函数主要功能是初始化lua_State中可能会
+  ** 引起内存申请错误的部分。因此采用保护模式来运行。
+  */
   if (luaD_rawrunprotected(L, f_luaopen, NULL) != LUA_OK) {
     /* memory allocation error: free partial state */
     close_state(L);

@@ -161,6 +161,7 @@ typedef struct CallInfo {
 /*
 ** 'global state', shared by all threads of this state
 */
+/* lua中所有thread共享的状态信息 */
 typedef struct global_State {
   /* frealloc指定lua中用于申请内存的函数 */
   lua_Alloc frealloc;  /* function to reallocate memory */
@@ -179,6 +180,7 @@ typedef struct global_State {
   lu_byte currentwhite;
   lu_byte gcstate;  /* state of garbage collector */
   lu_byte gckind;  /* kind of GC running */
+  /* 开启GC的标志位 */
   lu_byte gcrunning;  /* true if GC is running */
   /* allgc用来链接所有需要进行内存回收（GC）的对象。 */
   GCObject *allgc;  /* list of all collectable objects */
@@ -190,6 +192,8 @@ typedef struct global_State {
   GCObject *ephemeron;  /* list of ephemeron tables (weak keys) */
   GCObject *allweak;  /* list of all-weak tables */
   GCObject *tobefnz;  /* list of userdata to be GC */
+  
+  /* 用于保存不被GC回收的对象，如lua中关键字对应的TString对象，元方法对应的TString对象等等 */
   GCObject *fixedgc;  /* list of objects not to be collected */
   struct lua_State *twups;  /* list of threads with open upvalues */
   unsigned int gcfinnum;  /* number of finalizers to call in each GC step */
@@ -200,7 +204,11 @@ typedef struct global_State {
   /* 存放版本号 */
   const lua_Number *version;  /* pointer to version number */
   TString *memerrmsg;  /* memory-error message */
+
+  /* 存放lua中支持的event对应的名字(字符串) */
   TString *tmname[TM_N];  /* array with tag-method names */
+
+  /* 基本类型的元表。除了userdata和table之外，其余类型的每种类型的所有对象共享同一个元表。 */
   struct Table *mt[LUA_NUMTAGS];  /* metatables for basic types */
   TString *strcache[STRCACHE_N][STRCACHE_M];  /* cache for strings in API */
 } global_State;

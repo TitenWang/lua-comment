@@ -223,15 +223,50 @@ static void print_version (void) {
 ** other arguments (before the script name) go to negative indices.
 ** If there is no script name, assume interpreter's name as base.
 */
+/*
+** createargtable()用于创建一个arg表，包含了所有的命令行参数，索引为数字。
+** createargtable()函数要创建的arg table具有如下规则：
+** 命令行参数中lua代码的文件在这个表的的索引为0，命令行参数中在lua代码文件左边的参数
+** 在arg table中的索引是负的，而且从左到右依次递增；命令行参数中在lua代码文件右边的
+** 参数在args table中的索引是正的，而且从左到右依次递增。
+** 举例如下：命令行参数为：lua -e "print('helloworld')" test.lua a b
+** 则在arg表中有如下内容：
+** arg[-3] = "lua" arg[-2] = "-e" arg[-1] = "print('helloworld')"
+** arg[0] = "test.lua" arg[1] = "a" arg[2] = "b"
+*/
 static void createargtable (lua_State *L, char **argv, int argc, int script) {
   int i, narg;
+  /*
+  ** script这个参数的内容就是collectargs()函数中传递出来的，表示第一个没有被处理的参数在argv中的索引。
+  ** 通过分析collectargs()函数的代码，我们知道，如果命令行参数中没有指定lua代码的脚本文件，那么first
+  ** 存放的值和命令行参数的个数是相等的，即等于pmain()中的argc。
+  */
   if (script == argc) script = 0;  /* no script name? */
+  /*
+  ** 计算在args表中索引值为正的参数个数，即在lua代码文件右边的命令行参数个数
+  ** 注意，pmain()中的命令行参数个数argc是包括lua可执行文件的。
+  */
   narg = argc - (script + 1);  /* number of positive indices */
+
+  /*
+  ** 创建一个lua表（arg)，注意到，其数组部分的大小为narg，即上面的正索引值的参数个数，hash表部分的
+  ** 大小为script + 1，即在lua代码文件左边以及lua代码文件自身的参数个数。从这里我们可以知道，索引值为
+  ** 正的那部分命令行参数是存放到table的数组部分的，索引值为0和负的那部分命令行参数是存放到table的hash
+  ** 表部分的。
+  ** 下面这条创建lua表的语句，在创建完table之后，会将其压入栈顶部。
+  */
   lua_createtable(L, narg, script + 1);
+
+  /* 将所有的参数压入到args表中，下面的-2即为args表在栈中的索引值(对应L->top - 2) */
   for (i = 0; i < argc; i++) {
     lua_pushstring(L, argv[i]);
     lua_rawseti(L, -2, i - script);
   }
+
+  /*
+  ** 将上面创建的table以"arg"为键值添加到全局表_G中，同时上面创建的arg表也会从栈顶部弹出。
+  ** 由于这里将arg表添加到了_G中，因此我们在lua代码中可以直接访问arg表。
+  */
   lua_setglobal(L, "arg");
 }
 
@@ -434,12 +469,27 @@ static int pushargs (lua_State *L) {
 }
 
 
+/* 
+** 执行命令行参数中指定的lua代码文件，从handle_script()函数调用的地方可以看出，
+** argv[0]就是lua代码文件名对应的字符串，
+*/
 static int handle_script (lua_State *L, char **argv) {
   int status;
   const char *fname = argv[0];
   if (strcmp(fname, "-") == 0 && strcmp(argv[-1], "--") != 0)
     fname = NULL;  /* stdin */
+  
+  /* 加载lua代码文件，但未执行，因为lua代码文件可能需要命令行参数。 */
   status = luaL_loadfile(L, fname);
+
+  /*
+  ** 如果加载lua代码文件成功，则尝试从arg表中将lua代码文件的参数压入栈中，供执行文件的时候使用。
+  ** 在构造arg表的时候，lua代码文件在arg表中的索引为0，而在lua代码文件右边的命令行参数的索引值
+  ** 均为正，且存放在arg表的数组部分，因此我们只需要将数组部分的元素依序压入栈中即可，同时返回
+  ** 数组部分的元素个数。注意有时候在lua代码文件右边的命令行参数可能还会是一些选项，类似下面：
+  ** lua -e "print(math.sin(2)" test.lua a b -v
+  ** 对于上面这样的情况，我们也会将"-v"压入栈中，但不影响函数的执行结果。
+  */
   if (status == LUA_OK) {
     int n = pushargs(L);  /* push arguments to script */
     status = docall(L, n, LUA_MULTRET);
@@ -462,13 +512,39 @@ static int handle_script (lua_State *L, char **argv) {
 ** any invalid argument). 'first' returns the first not-handled argument
 ** (either the script name or a bad argument in case of error).
 */
+/*
+** Lua的命令行格式如下：
+** lua [options] [script [args]]
+** options是列出的选项，script则是lua代码文件，args是传递给lua代码文件的参数
+** 
+** Lua的命令行选项如下：
+** -e 直接将待执行的lua代码用双引号括起来，跟在-e后面，可以有空格，也可以没空格，
+** 	  如：lua -e "print(math.sin(2))"
+** -i 以交互式的方式启动lua。
+** -l 加载并执行一个库文件，文件名字跟在-l后面，可以有空格，也可以没空格直接跟在-l后面。
+** -v 显示版本号
+** -E 忽略环境变量
+** -- 停止处理后面的选项
+** -  停止处理后面的选项，并执行stdin中的内容
+** first参数返回的是第一个没有处理的参数在argv中的索引，通过下面的代码分析我们知道，如果
+** 命令行参数中没有lua代码的脚本文件，那么first存放的值和命令行参数的个数是相等的，即等于
+** pmain()中的argc。
+** 返回值args是选项对应的标记位组合。
+*/
 static int collectargs (char **argv, int *first) {
   int args = 0;
   int i;
+  /* argv[0]就是lua自身，所以从1开始遍历命令行参数数组。 */
   for (i = 1; argv[i] != NULL; i++) {
     *first = i;
+    /*
+    ** Lua的命令行选项都是以'-'开头的，如果不是，则停止处理并返回。这个地方可能是单独的lua代码文件，
+    ** 也有可能是非法参数，也有可能是-e后面跟的包含了lua代码的字符串，也有可能是-l后面跟的库文件。如果
+    ** 出现了不以'-'开头的命令行参数，则直接从该函数返回，后面的参数也不再处理了。
+    */
     if (argv[i][0] != '-')  /* not an option? */
         return args;  /* stop handling options */
+	/* 如果 */
     switch (argv[i][1]) {  /* else check option */
       case '-':  /* '--' */
         if (argv[i][2] != '\0')  /* extra characters after '--'? */
@@ -490,10 +566,14 @@ static int collectargs (char **argv, int *first) {
         args |= has_v;
         break;
       case 'e':
-        args |= has_e;  /* FALLTHROUGH */
+        args |= has_e;  /* FALLTHROUGH *//* -e和-l都需要再接参数，所以这里不break，而是继续往下走*/
       case 'l':  /* both options need an argument */
         if (argv[i][2] == '\0') {  /* no concatenated argument? */
           i++;  /* try next 'argv' */
+		  /* 
+		  ** -e和-l之后还要再接一个参数，如果下一个命令行参数为空或者是另一个选项的开始的话，
+		  ** 那么就报错。
+		  */
           if (argv[i] == NULL || argv[i][0] == '-')
             return has_error;  /* no next argument or it is another option */
         }
@@ -511,34 +591,61 @@ static int collectargs (char **argv, int *first) {
 ** Processes options 'e' and 'l', which involve running Lua code.
 ** Returns 0 if some code raises an error.
 */
+/*
+** 从runargs()调用的地方可以知道，参数n就是命令行参数中第一个非选项类的参数，比如可能是
+** 单独的lua代码文件，也有可能是-e后面跟的包含了lua代码的字符串，也有可能是-l后面跟的库文件。
+*/
 static int runargs (lua_State *L, char **argv, int n) {
   int i;
   for (i = 1; i < n; i++) {
     int option = argv[i][1];
     lua_assert(argv[i][0] == '-');  /* already checked */
+    /* 判断选项是不是-e或者-l，如果不是的话，则跳过，这里还需要区分的是单独的lua代码文件 */
     if (option == 'e' || option == 'l') {
       int status;
+      /* 
+      ** 注意：-e和-l选项的参数可以直接跟在它们后面，也可以加空格后跟在后面，所以这里需要
+      ** 判断是哪种情况。
+      */
       const char *extra = argv[i] + 2;  /* both options need an argument */
       if (*extra == '\0') extra = argv[++i];
+	  
       lua_assert(extra != NULL);
+
+	  /* -e和-l分别采取不同的执行方式，-l主要是加载并执行库文件，如果执行失败，则返回0 */
       status = (option == 'e')
                ? dostring(L, extra, "=(command line)")
                : dolibrary(L, extra);
       if (status != LUA_OK) return 0;
     }
   }
+  
+  /* 执行成功，返回1。 */
   return 1;
 }
 
 
-
+/* 
+** 处理环境变量"LUA_INIT"
+** 如果没有获取到环境变量"LUA_INIT"的内容，比如为空，则直接返回；
+** 如果"LUA_INIT"环境变量的内容以"@"开头，则lua会将"@"之后内容当做lua文件名，然后加载并执行该文件。
+** 如果"LUA_INIT"环境变量的内容不以"@"开头，那么lua将其当做lua代码，会加载并执行它，
+*/
 static int handle_luainit (lua_State *L) {
+
+  /* 获取环境变量"LUA_INIT"的内容 */
   const char *name = "=" LUA_INITVARVERSION;
   const char *init = getenv(name + 1);
   if (init == NULL) {
     name = "=" LUA_INIT_VAR;
     init = getenv(name + 1);  /* try alternative name */
   }
+
+  /* 
+  ** 如果没有获取到环境变量"LUA_INIT"的内容，比如为空，则直接返回；
+  ** 如果"LUA_INIT"环境变量的内容以"@"开头，则lua会将"@"之后内容当做lua文件名，然后加载并执行该文件。
+  ** 如果"LUA_INIT"环境变量的内容不以"@"开头，那么lua将其当做lua代码，会加载并执行它，
+  */
   if (init == NULL) return LUA_OK;
   else if (init[0] == '@')
     return dofile(L, init+1);
@@ -557,6 +664,11 @@ static int pmain (lua_State *L) {
   int argc = (int)lua_tointeger(L, 1);
   char **argv = (char **)lua_touserdata(L, 2);
   int script;
+
+  /* 
+  ** 将一些需要在运行lua代码之前就执行的命令行参数映射成对应的bit，后续只要
+  ** 检查相应的bit是否置位，即可判断命令行中是否包含该参数。
+  */
   int args = collectargs(argv, &script);
   luaL_checkversion(L);  /* check that interpreter has correct version */
   if (argv[0] && argv[0][0]) progname = argv[0];
@@ -564,32 +676,57 @@ static int pmain (lua_State *L) {
     print_usage(argv[script]);  /* 'script' has index of bad arg. */
     return 0;
   }
+
+  /* 检查是否有"-v"，有的话，打印版本号信息 */
   if (args & has_v)  /* option '-v'? */
     print_version();
+
+  /* 检查是否有"-E"，有的话，向全局注册表中写入键值对{"LUA_NOENV": 1}，表示忽略env. vars. */
   if (args & has_E) {  /* option '-E'? */
     lua_pushboolean(L, 1);  /* signal for libraries to ignore env. vars. */
     lua_setfield(L, LUA_REGISTRYINDEX, "LUA_NOENV");
   }
+
+  /* 加载lua中的标准库 */
   luaL_openlibs(L);  /* open standard libraries */
+
+  /* 创建一个arg表，包含了所有的命令行参数，索引为数字。然后添加到全局表_G中。 */
   createargtable(L, argv, argc, script);  /* create table 'arg' */
+
+  /* 没有"-E"参数的时候启动lua，则调用handle_luainit()处理环境变量"LUA_INIT" */
   if (!(args & has_E)) {  /* no option '-E'? */
     if (handle_luainit(L) != LUA_OK)  /* run LUA_INIT */
       return 0;  /* error running LUA_INIT */
   }
+
+  /* 处理-e和-l选项，如果出错，runargs()会返回0 */
   if (!runargs(L, argv, script))  /* execute arguments -e and -l */
     return 0;  /* something failed */
+
+  /*
+  ** script == argc说明命令行参数中没有指定lua代码文件，否则就指定了lua代码文件。如果
+  ** 指定了lua代码文件，那么就调用handle_script()执行该代码文件，执行完后退出lua解释器。
+  */
   if (script < argc &&  /* execute main script (if there is one) */
       handle_script(L, argv + script) != LUA_OK)
     return 0;
+  
+  /* 如果命令行中指定了-i选项，则以交互模式打开lua解释器。 */
   if (args & has_i)  /* -i option? */
     doREPL(L);  /* do read-eval-print loop */
   else if (script == argc && !(args & (has_e | has_v))) {  /* no arguments? */
+    /*
+    ** 如果命令行参数中没有指定lua代码文件，也没有指定-e和-v选项，则以交互模式运行lua解释器。
+    ** 在交互模式中，用户输入一串代码，按回车，解释器就执行这串代码，否则等待用户输入。
+    */
     if (lua_stdin_is_tty()) {  /* running in interactive mode? */
       print_version();
       doREPL(L);  /* do read-eval-print loop */
     }
     else dofile(L, NULL);  /* executes stdin as a file */
   }
+
+  /* 向栈顶部压入bool值true。然后退出 */
   lua_pushboolean(L, 1);  /* signal no errors */
   return 1;
 }
@@ -597,16 +734,26 @@ static int pmain (lua_State *L) {
 
 int main (int argc, char **argv) {
   int status, result;
+  /* 主要是创建和初始化主线程对应的lua_State状态信息和由全部thread共享的lua_State状态信息 */
   lua_State *L = luaL_newstate();  /* create state */
   if (L == NULL) {
     l_message(argv[0], "cannot create state: not enough memory");
     return EXIT_FAILURE;
   }
+
+  /*
+  ** 以保护模式来调用pmain()函数。步骤如下：
+  ** 1、将pmain压入虚拟栈。
+  ** 2、将argc、argv压入虚拟栈。
+  ** 3、执行函数调用。
+  ** 4、从虚拟栈中获取函数调用结果。
+  */
   lua_pushcfunction(L, &pmain);  /* to call 'pmain' in protected mode */
   lua_pushinteger(L, argc);  /* 1st argument */
   lua_pushlightuserdata(L, argv); /* 2nd argument */
   status = lua_pcall(L, 2, 1, 0);  /* do the call */
   result = lua_toboolean(L, -1);  /* get result */
+  
   report(L, status);
   lua_close(L);
   return (result && status == LUA_OK) ? EXIT_SUCCESS : EXIT_FAILURE;

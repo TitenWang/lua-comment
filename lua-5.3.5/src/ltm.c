@@ -34,7 +34,7 @@ LUAI_DDEF const char *const luaT_typenames_[LUA_TOTALTAGS] = {
   "proto" /* this last case is used for tests only */
 };
 
-
+/* 元方法初始化，主要是初始化event名字，同时设置不让GC来回收这些字符串。*/
 void luaT_init (lua_State *L) {
   static const char *const luaT_eventname[] = {  /* ORDER TM */
     "__index", "__newindex",
@@ -46,8 +46,11 @@ void luaT_init (lua_State *L) {
     "__concat", "__call"
   };
   int i;
+  /* 将Lua中支持的event对应的字符串保存到由所有thread共享的状态信息中。 */
   for (i=0; i<TM_N; i++) {
     G(L)->tmname[i] = luaS_new(L, luaT_eventname[i]);
+	
+    /* 将这些event的名字对应的字符串对象存入global_State的fixdgc链表头部 */
     luaC_fix(L, obj2gco(G(L)->tmname[i]));  /* never collect these names */
   }
 }
