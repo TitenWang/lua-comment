@@ -278,7 +278,7 @@ LUA_API void lua_pushvalue (lua_State *L, int idx) {
 ** access functions (stack -> C)
 */
 
-/* lua_type()函数用于获取在堆栈中索引为idx的Value对象的基本类型 */
+/* lua_type()函数用于获取在栈中索引为idx的Value对象的基本类型 */
 LUA_API int lua_type (lua_State *L, int idx) {
   StkId o = index2addr(L, idx);
   /* 
@@ -497,7 +497,7 @@ LUA_API lua_CFunction lua_tocfunction (lua_State *L, int idx) {
   else return NULL;  /* not a C function */
 }
 
-
+/* 返回栈索引值为idx的TValue对象内的userdata对象的用户数据首地址 */
 LUA_API void *lua_touserdata (lua_State *L, int idx) {
   StkId o = index2addr(L, idx);
   switch (ttnov(o)) {
@@ -542,16 +542,17 @@ LUA_API void lua_pushnil (lua_State *L) {
   lua_unlock(L);
 }
 
-/* 将number n压入堆栈 */
+/* 将实数n压入栈顶部，并更新栈指针+1 */
 LUA_API void lua_pushnumber (lua_State *L, lua_Number n) {
   lua_lock(L);
+  /* 将实数n存入L->top指定的栈位置，然后栈顶递增 */
   setfltvalue(L->top, n);
   api_incr_top(L);
   lua_unlock(L);
 }
 
 
-/* 将整数n压入堆栈 */
+/* 将整数n压入堆栈，并更新栈指针+1 */
 LUA_API void lua_pushinteger (lua_State *L, lua_Integer n) {
   lua_lock(L);
   /* 将整数n存入L->top指定的堆栈位置，然后栈顶递增 */
@@ -566,6 +567,11 @@ LUA_API void lua_pushinteger (lua_State *L, lua_Integer n) {
 ** 'len' == 0 (as 's' can be NULL in that case), due to later use of
 ** 'memcmp' and 'memcpy'.
 */
+/* 
+** 将C类型字符串s压入栈顶，如果s为NULL或者长度为0，那么压入空字符串对象（区别nil对象）；
+** 如果不为NULL，则创建相应的string类型，将s存入string后将其压入栈顶。然后返回数据在
+** string中的新地址。
+*/
 LUA_API const char *lua_pushlstring (lua_State *L, const char *s, size_t len) {
   TString *ts;
   lua_lock(L);
@@ -577,7 +583,11 @@ LUA_API const char *lua_pushlstring (lua_State *L, const char *s, size_t len) {
   return getstr(ts);
 }
 
-
+/* 
+** 将C类型字符串s压入栈顶，如果s为NULL，那么压入nil对象；如果不为NULL，则
+** 创建相应的string类型，将s存入string后将其压入栈顶。然后返回数据在string中
+** 的新地址。
+*/
 LUA_API const char *lua_pushstring (lua_State *L, const char *s) {
   lua_lock(L);
   if (s == NULL)
@@ -675,6 +685,7 @@ LUA_API void lua_pushcclosure (lua_State *L, lua_CFunction fn, int n) {
 }
 
 
+/* 向栈顶压入一个bool值，b只要不是0，就当做true；否则就是false */
 LUA_API void lua_pushboolean (lua_State *L, int b) {
   lua_lock(L);
   setbvalue(L->top, (b != 0));  /* ensure that true is 1 */
@@ -683,6 +694,7 @@ LUA_API void lua_pushboolean (lua_State *L, int b) {
 }
 
 
+/* 向栈顶压入一个指针（即light userdata） */
 LUA_API void lua_pushlightuserdata (lua_State *L, void *p) {
   lua_lock(L);
   setpvalue(L->top, p);
@@ -691,6 +703,7 @@ LUA_API void lua_pushlightuserdata (lua_State *L, void *p) {
 }
 
 
+/*向栈顶压入lua thread自身 */
 LUA_API int lua_pushthread (lua_State *L) {
   lua_lock(L);
   setthvalue(L, L->top, L);
@@ -738,6 +751,7 @@ static int auxgetstr (lua_State *L, const TValue *t, const char *k) {
 }
 
 
+/* 从全局环境表_G中获取键值为name的TValue对象，并将该对象压入栈顶，同时返回该对象的类型 */
 LUA_API int lua_getglobal (lua_State *L, const char *name) {
   Table *reg = hvalue(&G(L)->l_registry);
   lua_lock(L);
@@ -745,6 +759,10 @@ LUA_API int lua_getglobal (lua_State *L, const char *name) {
 }
 
 
+/* 
+** 以栈顶部元素为键值从栈索引值为idx的table中获取对应的TValue对象，获取到TValue对象
+** 之后，将该对象覆盖写到键值对象所在位置，同时返回该对象的类型。注意栈指针L->top没变。
+*/
 LUA_API int lua_gettable (lua_State *L, int idx) {
   StkId t;
   lua_lock(L);
@@ -797,6 +815,10 @@ LUA_API int lua_rawget (lua_State *L, int idx) {
 }
 
 
+/* 
+** 从栈索引值（可能是伪索引）为idx处的table中，以n为键值，获取相应的TValue对象，
+** 并压入栈顶部，然后返回TValue对象实际的数据类型。
+*/
 LUA_API int lua_rawgeti (lua_State *L, int idx, lua_Integer n) {
   StkId t;
   lua_lock(L);
@@ -845,7 +867,12 @@ LUA_API void lua_createtable (lua_State *L, int narray, int nrec) {
   lua_unlock(L);
 }
 
-
+/* 
+** 获取栈索引值为objindex的对象的元表，table和userdata的每个对象都有自己的元表，
+** 而其他类型则只有共有元表，然后将获取到的元表压入栈顶部，并更新栈指针，栈增长。
+** 返回值为1，表示找到了元表，并成功压入栈顶部；返回值为0，表示没有找到元表，也没
+** 压入栈顶部。
+*/
 LUA_API int lua_getmetatable (lua_State *L, int objindex) {
   const TValue *obj;
   Table *mt;
@@ -873,11 +900,16 @@ LUA_API int lua_getmetatable (lua_State *L, int objindex) {
 }
 
 
+/* 
+** 从栈索引值为idx处取出一个userdata对象，然后将userdata对象中存放的用户内容及其类型
+** 写入栈顶。接着返回用户内容的类型。
+*/
 LUA_API int lua_getuservalue (lua_State *L, int idx) {
   StkId o;
   lua_lock(L);
   o = index2addr(L, idx);
   api_check(L, ttisfulluserdata(o), "full userdata expected");
+  /* 将userdata对象中存放的用户内容及其类型写入栈顶，更新栈指针 */
   getuservalue(L, uvalue(o), L->top);
   api_incr_top(L);
   lua_unlock(L);
@@ -930,7 +962,10 @@ LUA_API void lua_setglobal (lua_State *L, const char *name) {
   auxsetstr(L, luaH_getint(reg, LUA_RIDX_GLOBALS), name);
 }
 
-
+/*
+** 以栈次顶部元素作为键值，将栈顶部元素添加到栈索引值为idx的table中，同时更新栈指针，
+** 将栈顶部元素和栈次顶部元素都弹出栈，栈指针L->top指向原键值所在位置。
+*/
 LUA_API void lua_settable (lua_State *L, int idx) {
   StkId t;
   lua_lock(L);
@@ -1006,6 +1041,7 @@ LUA_API void lua_rawsetp (lua_State *L, int idx, const void *p) {
   api_checknelems(L, 1);
   o = index2addr(L, idx);
   api_check(L, ttistable(o), "table expected");
+  /* 将p设置到TValue中 */
   setpvalue(&k, cast(void *, p));
   slot = luaH_set(L, hvalue(o), &k);
   setobj2t(L, slot, L->top - 1);
@@ -1393,6 +1429,7 @@ LUA_API void *lua_newuserdata (lua_State *L, size_t size) {
   u = luaS_newudata(L, size);
   setuvalue(L, L->top, u);
   api_incr_top(L);
+  
   luaC_checkGC(L);
   lua_unlock(L);
   /* 返回封装在Udata对象内部的缓冲区(块)的首地址 */

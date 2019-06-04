@@ -205,13 +205,25 @@ void luaC_fix (lua_State *L, GCObject *o) {
 ** create a new collectable object (with given type and size) and link
 ** it to 'allgc' list.
 */
+/* 
+** 创建一个GCobject对象，其具体的类型由tt指定，大小由sz指定，后续可以根据上下文
+** 将GCobject对象转换为某种具体的类型。
+*/
 GCObject *luaC_newobj (lua_State *L, int tt, size_t sz) {
   global_State *g = G(L);
 
-	/* luaM_newobject()返回的其实就是一块内存，这里将其强转为GCObject*类型 */
+  /*
+  ** luaM_newobject()返回的其实就是一块内存，这里将其强转为GCObject*类型，
+  ** 我们知道，只要是需要进行垃圾回收（GC）的类型都和GCobject类型含有一样的
+  ** 头部，因此这里我们可以先用GCobject类型来统一标记，不影响其使用，因为
+  ** 真正的类型由GCobject的tt成员指定了。后续也可以根据上下文转换为具体的类型。
+  */
   GCObject *o = cast(GCObject *, luaM_newobject(L, novariant(tt), sz));
   o->marked = luaC_white(g);
+  /* 记录具体类型 */
   o->tt = tt;
+  
+  /* 将该对象插入到g->allgc链表头部 */
   o->next = g->allgc;
   g->allgc = o;
   return o;

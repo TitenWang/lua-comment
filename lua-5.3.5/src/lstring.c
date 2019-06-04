@@ -319,16 +319,28 @@ TString *luaS_new (lua_State *L, const char *str) {
   return p[0];
 }
 
-/* 创建一个Udate对象 */
+/* 
+** 创建一个Udata对象，并申请一块紧跟在Udata对象后面的大小为s的内存区域，Udata对象
+** 其实是userdata对象的头部，而紧跟在Udata对象后面的内存区域则为userdata对象用于存放
+** 实际内容的区域。
+*/
 Udata *luaS_newudata (lua_State *L, size_t s) {
   Udata *u;
   GCObject *o;
   if (s > MAX_SIZE - sizeof(Udata))
     luaM_toobig(L);
+  /* 申请一个GCobject对象，其内部类型是LUA_TUSERDATA，大小由sizeludata(s)指定 */
   o = luaC_newobj(L, LUA_TUSERDATA, sizeludata(s));
+  /*
+  ** 将GCObject对象转换为Udata对象，之所以这样子做，是为了更好地管理需要进行垃圾回收的类型。
+  ** 在创建某个需要进行内存回收的类型对象时，用GCobject作为统一借口进行申请，然后将申请到的
+  ** GCObject对象在强转为某一具体的类型。因为所有需要进行内存回收的类型都和GCObject有共同的
+  ** 头部。
+  */
   u = gco2u(o);
   u->len = s;
   u->metatable = NULL;
+  
   /* 用nil对象进行初始化 */
   setuservalue(L, u, luaO_nilobject);
   return u;

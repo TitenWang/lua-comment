@@ -23,6 +23,7 @@
 * WARNING: if you change the order of this enumeration,
 * grep "ORDER RESERVED"
 */
+/* 这里定义的保留字符串Token类型和luaX_tokens数组中定义了保留字符串一一对应 */
 enum RESERVED {
   /* terminal symbols denoted by reserved words */
   TK_AND = FIRST_RESERVED, TK_BREAK,

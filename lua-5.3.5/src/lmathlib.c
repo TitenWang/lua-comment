@@ -412,14 +412,14 @@ static const luaL_Reg mathlib[] = {
 LUAMOD_API int luaopen_math (lua_State *L) {
   /* 
   ** 将mathlib中定义的函数及其名字存入一个table中，这个table是库级别的，
-  ** 即一个库对应一个table。执行完luaL_newlib()之后，这个table就位于堆栈
+  ** 即一个库对应一个table。执行完luaL_newlib()之后，这个table就位于栈
   ** 最顶部。
   */
   luaL_newlib(L, mathlib);
 
   /* 
-  ** 先将常量PI压入堆栈，然后将常量PI存入上面创建的那个对应于math库的table中，
-  ** 然后再弹出此时位于堆栈顶部的PI。因此执行完到最后，table又位于堆栈最顶部。
+  ** 先将常量PI压入栈，然后将常量PI存入上面创建的那个对应于math库的table中，
+  ** 然后再弹出此时位于栈顶部的PI。因此执行完到最后，table又位于堆栈最顶部。
   ** 这里解释一下为什么是“-2”？因为L->top指向的是堆栈中下一个即将存入内容的地址，
   ** 在执行lua_pushnumber(L, PI)之前，table是堆栈最顶部元素，其地址为L->top-1;
   ** 那么执行完lua_pushnumber(L, PI)之后，table的地址就是L->top-2了，此时PI是

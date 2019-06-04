@@ -36,6 +36,12 @@
 ** bits 4-5: variant bits
 ** bit 6: whether value is collectable
 */
+/*
+** 对于打了标签的Value对象，其包所含的内部类型有如下定义：
+** 低四位(bits 0-3)用于表示基本类型
+** 中间两位(bits 4-5)用于表示变种类型
+** 第6位用于表示一个value对象是不是可以回收的。
+*/
 
 
 /*
@@ -44,8 +50,18 @@
 ** 1 - light C function
 ** 2 - regular C function (closure)
 */
+/*
+** lua中的函数总共有三种类型，一种是lua闭包，一种是没有自由变量的C函数，
+** 一种是有自由变量的C函数，即C闭包。
+*/
 
 /* Variant tags for functions */
+/*
+** LUA_TFUNCTION宏的值是6，即00000110b，那么依下面的定义有：
+** lua闭包的类型为00000110b
+** 没有自由变量的C函数的类型为00010110b
+** 有自由变量的C函数（C闭包）的类型为00100110b
+*/
 #define LUA_TLCL	(LUA_TFUNCTION | (0 << 4))  /* Lua closure */
 /* light C function是指没有upvalue的函数 */
 #define LUA_TLCF	(LUA_TFUNCTION | (1 << 4))  /* light C function */
@@ -77,7 +93,7 @@
 #define BIT_ISCOLLECTABLE	(1 << 6)
 
 /* mark a tag as collectable */
-/* 给需要进行垃圾回收操作的数据类型打标签 */
+/* 给需要进行垃圾回收操作的数据类型打需要进行垃圾回收的标记位 */
 #define ctb(t)			((t) | BIT_ISCOLLECTABLE)
 
 
@@ -120,8 +136,8 @@ struct GCObject {
 ** Union of all Lua values
 */
 /*
-** lua中所有可能值的联合体，通过包含GCObject *类型的成员gc，
-** 可以表示某个类型的值是否需要进行垃圾回收。
+** lua中所有可能值的联合体，通过包含GCObject *类型的成员gc，我们就可以将所有
+** 需要进行垃圾回收（GC）的类型也包含进Value中，进而lua中所有类型的值都可以用Value来表示。
 */
 typedef union Value {
   GCObject *gc;    /* collectable objects */
@@ -154,7 +170,7 @@ typedef struct lua_TValue {
 /* macro defining a nil value */
 #define NILCONSTANT	{NULL}, LUA_TNIL
 
-/* val_宏用于获取具体值内容 */
+/* val_宏用于获取具体的值内容 */
 #define val_(o)		((o)->value_)
 
 
@@ -163,6 +179,7 @@ typedef struct lua_TValue {
 #define rttype(o)	((o)->tt_)
 
 /* tag with no variants (bits 0-3) */
+/* 获取x的基本类型，不含变种类型和GC标记位 */
 #define novariant(x)	((x) & 0x0F)
 
 /* type tag of a TValue (bits 0-3 for tags + variant bits 4-5) */
@@ -173,7 +190,7 @@ typedef struct lua_TValue {
 #define ttype(o)	(rttype(o) & 0x3F)
 
 /* type tag of a TValue with no variants (bits 0-3) */
-/* 获取基本类型标记。基本类型标记其实就是lua.h中的那些类型宏。 */
+/* 获取Value对象内部值对应的基本类型标记。基本类型标记其实就是lua.h中的那些类型宏。 */
 #define ttnov(o)	(novariant(rttype(o)))
 
 
@@ -208,7 +225,7 @@ typedef struct lua_TValue {
 #define gcvalue(o)	check_exp(iscollectable(o), val_(o).gc)
 #define pvalue(o)	check_exp(ttislightuserdata(o), val_(o).p)
 
-/* tsvalue()用于获取string的内容 */
+/* tsvalue()用于获取UTString对象 */
 #define tsvalue(o)	check_exp(ttisstring(o), gco2ts(val_(o).gc))
 #define uvalue(o)	check_exp(ttisfulluserdata(o), gco2u(val_(o).gc))
 #define clvalue(o)	check_exp(ttisclosure(o), gco2cl(val_(o).gc))
@@ -345,7 +362,10 @@ typedef struct lua_TValue {
 ** =======================================================
 */
 
-
+/* 
+** 栈指针类型，表明栈单元存放的是TValue类型的数据，由于TValue可以表示lua中所有类型的数据，
+** 因此栈中可以存放所有类型的数据
+*/
 typedef TValue *StkId;  /* index to stack elements */
 
 /*
@@ -364,8 +384,10 @@ typedef TValue *StkId;  /* index to stack elements */
 typedef struct TString {
   CommonHeader;		/* 所有类型的公共头部 */
   /*
-  ** extra成员对于短字符串来说是保留字段，但是对于长字符串来说，
-  ** 是用于表明长字符串是否已经计算了hash值的标志位，1表示已计算hash值。
+  ** extra成员对于长字符串来说，是用于表明长字符串是否已经计算了hash值的标志位，1表示已计算hash值。
+  ** extra成员对于短字符串来说，用于标记一个字符串是否是lua保留的字符串，如关键字等。
+  ** 这种情况下，extra成员存放的就是紧跟在头部后面的字符串在luaX_tokens数组中的下标。
+  ** 如果一个短字符串不是保留字符串，那么extra就位0。
   */
   lu_byte extra;  /* reserved words for short strings; "has hash" for longs */
   lu_byte shrlen;  /* length for short strings */ /* 短字符串的长度 */
@@ -395,18 +417,24 @@ typedef union UTString {
 ** Get the actual string (array of bytes) from a 'TString'.
 ** (Access to 'extra' ensures that value is really a 'TString'.)
 */
-/* lua中的string内容是紧跟在string头部之后的，所以这里返回的是内容的起始地址 */
+/*
+** lua中的string内容是紧跟在string头部之后的，所以这里返回的是内容的起始地址。
+** cast(char *, (ts))是获取字符串对象的起始地址。
+*/
 #define getstr(ts)  \
   check_exp(sizeof((ts)->extra), cast(char *, (ts)) + sizeof(UTString))
 
 
 /* get the actual string (array of bytes) from a Lua value */
+/* 从一个value对象中获取UTString对象中的实际字符串内容 */
 #define svalue(o)       getstr(tsvalue(o))
 
 /* get string length from 'TString *s' */
+/* 获取字符串对象的长度，短字符串和长字符串中存放长度的地方不一样 */
 #define tsslen(s)	((s)->tt == LUA_TSHRSTR ? (s)->shrlen : (s)->u.lnglen)
 
 /* get string length from 'TValue *o' */
+/* 从一个value对象中获取UTString对象中实际字符串的长度 */
 #define vslen(o)	tsslen(tsvalue(o))
 
 
@@ -414,12 +442,18 @@ typedef union UTString {
 ** Header for userdata; memory area follows the end of this structure
 ** (aligned according to 'UUdata'; see next).
 */
+/* userdata类型的头部，而userdata类型的实际内容（用户数据）则紧跟在头部之后 */
 typedef struct Udata {
   CommonHeader;
+  /* 用户数据的类型 */
   lu_byte ttuv_;  /* user value's tag */
+  /* userdata对象的元表 */
   struct Table *metatable;
+  /* 用于数据的长度 */
   size_t len;  /* number of bytes */
   union Value user_;  /* user value */
+
+  /* 对于LUA_TUSERDATA类型而言，从这里开始就是用户的数据，内存长度为len字节 */
 } Udata;
 
 
@@ -436,6 +470,7 @@ typedef union UUdata {
 **  Get the address of memory block inside 'Udata'.
 ** (Access to 'ttuv_' ensures that value is really a 'Udata'.)
 */
+/* 返回userdata中存放用户数据的内存起始地址 */
 #define getudatamem(u)  \
   check_exp(sizeof((u)->ttuv_), (cast(char*, (u)) + sizeof(UUdata)))
 
@@ -535,7 +570,7 @@ typedef struct UpVal UpVal;
 /*
 ** Closures
 */
-
+/* 闭包头的定义，nupvalues是闭包所含有的自由变量的个数 */
 #define ClosureHeader \
 	CommonHeader; lu_byte nupvalues; GCObject *gclist
 
@@ -559,12 +594,14 @@ typedef struct LClosure {
 } LClosure;
 
 
+/* 闭包联合体，包括lua闭包和C闭包 */
 typedef union Closure {
   CClosure c;
   LClosure l;
 } Closure;
 
 
+/* 判断value对象o是不是一个lua闭包 */
 #define isLfunction(o)	ttisLclosure(o)
 
 #define getproto(o)	(clLvalue(o)->p)

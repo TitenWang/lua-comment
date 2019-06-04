@@ -57,7 +57,7 @@ static const luaL_Reg loadedlibs[] = {
   {NULL, NULL}
 };
 
-/* luaL_openlibs()函数用于加载lua的标准库 */
+/* luaL_openlibs()函数用于加载lua的预加载库 */
 LUALIB_API void luaL_openlibs (lua_State *L) {
   const luaL_Reg *lib;
   /* "require" functions from 'loadedlibs' and set results to global table */

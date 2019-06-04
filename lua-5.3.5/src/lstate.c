@@ -181,14 +181,22 @@ static void freestack (lua_State *L) {
 /*
 ** Create registry table and its predefined values
 */
+/* 创建全局注册表，以及其一些预定义的内容，如_G表，主线程对应的状态信息 */
 static void init_registry (lua_State *L, global_State *g) {
   TValue temp;
   /* create registry */
+  /* 创建一个表，会被当做全局注册表，存放在global_State对象的l_registry成员中 */
   Table *registry = luaH_new(L);
   sethvalue(L, &g->l_registry, registry);
+
+  /*
+  ** 对全局注册表的数组部分进行扩容，将其数组部分的大小设置为2，其中第一个元素（索引
+  ** 为LUA_RIDX_MAINTHREAD）用于存放主线程状态信息，即lua_State对象L；第二个元素（索引
+  ** 为LUA_RIDX_GLOBALS）用于存放全局表_G，_G表也是在倒数第二条语句中调用luaH_new()创建的。
+  */
   luaH_resize(L, registry, LUA_RIDX_LAST, 0);
   /* registry[LUA_RIDX_MAINTHREAD] = L */
-  setthvalue(L, &temp, L);  /* temp = L */
+  setthvalue(L, &temp, L);  /* temp = L */LUA_RIDX_MAINTHREAD
   luaH_setint(L, registry, LUA_RIDX_MAINTHREAD, &temp);
   /* registry[LUA_RIDX_GLOBALS] = table of globals */
   sethvalue(L, &temp, luaH_new(L));  /* temp = new table (global table) */

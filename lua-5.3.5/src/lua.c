@@ -552,6 +552,8 @@ static int handle_luainit (lua_State *L) {
 ** Reads the options and handles them all.
 */
 static int pmain (lua_State *L) {
+
+  /* 获取main函数中传递进来的argc argv */
   int argc = (int)lua_tointeger(L, 1);
   char **argv = (char **)lua_touserdata(L, 2);
   int script;

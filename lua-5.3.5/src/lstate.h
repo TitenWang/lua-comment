@@ -180,6 +180,7 @@ typedef struct global_State {
   lu_byte gcstate;  /* state of garbage collector */
   lu_byte gckind;  /* kind of GC running */
   lu_byte gcrunning;  /* true if GC is running */
+  /* allgc用来链接所有需要进行内存回收（GC）的对象。 */
   GCObject *allgc;  /* list of all collectable objects */
   GCObject **sweepgc;  /* current position of sweep in list */
   GCObject *finobj;  /* list of collectable objects with finalizers */
@@ -208,7 +209,7 @@ typedef struct global_State {
 /*
 ** 'per thread' state
 */
-/* lua_State结构体用于存放Lua虚拟机中单个线程的全局状态信息 */
+/* lua_State结构体用于存放Lua虚拟机中单个线程（thread）的全局状态信息 */
 struct lua_State {
   CommonHeader;
 
@@ -222,7 +223,7 @@ struct lua_State {
   /* status存放的是thread的执行状态 */
   lu_byte status;
 
-  /* 指向整个堆栈的栈顶位置（未存入有效数据） */
+  /* 指向整个栈的栈顶位置（未存入有效数据） */
   StkId top;  /* first free slot in the stack */
   global_State *l_G;  /* l_G指向的是由所有thread共享的全局虚拟机信息 */
 
@@ -230,10 +231,10 @@ struct lua_State {
   CallInfo *ci;  /* call info for current function */
   const Instruction *oldpc;  /* last pc traced */
 
-  /* stack_last存放整个函数调用栈的内存上限 */
+  /* stack_last存放整个栈的内存上限 */
   StkId stack_last;  /* last free slot in the stack */
 
-  /* 函数调用栈的起始地址 */
+  /* 栈的起始地址 */
   StkId stack;  /* stack base */
   UpVal *openupval;  /* list of open upvalues in this stack */
   GCObject *gclist;
@@ -265,7 +266,22 @@ struct lua_State {
 /*
 ** Union of all collectable objects (only for conversions)
 */
-/* 用于存放所有需要GC的数据类型的联合体 */
+/*
+** 用于存放所有需要GC的数据类型的联合体，这个联合体主要用于做类型转换使用。
+** lua是怎么利用下面这个联合体实现将GCObject转换为具体的某一种需要GC的类型的呢？
+** 我们知道，所有需要进行GC的类型在其对应的结构体开始都会包含一个CommonHeader。
+** union GCUnion中列出了所有类型都是需要进行GC的，都包含CommonHeader。实际上GCObject
+** 这个类型其实就只包含了CommonHeader，因此对于一个类型为union GCUnion的值，该值的
+** 内存中最开始都包含了CommonHeader，而不管该值是union GCUnion中哪一种具体的类型。
+** 因此可以利用这一特性来做类型转换。
+** lua中为什么这么做呢？我的理解是为了实现对需要进行GC的类型进行统一管理，比如我们要申请
+** 一个需要进行GC的类型的对象，由于需要进行GC的类型很多，我们不可能为每中类型都创建申请接口，
+** 这样就会有很多冗余代码。因为在申请一个需要进行GC的类型的对象时，我们统一转换为申请一个GCObject
+** 类型的对象，申请的同时传入具体的某个类型以及所需要的内存大小。这样在申请完GCObject对象时，
+** 我们就可以按需转换为我们所需要的某个类型。因为大家的头部都一样，多出来的就是某个类型自己私有
+** 的东西了。
+** GCUnion联合体所有可能的类型的对象的地址都和类型为GCObject的gc的地址一样。
+*/
 union GCUnion {
   GCObject gc;  /* common header */
   struct TString ts;
@@ -276,11 +292,12 @@ union GCUnion {
   struct lua_State th;  /* thread */
 };
 
-/* 将o进行强制类型转换，转换成union GCUnion* 类型 */
+/* 将value对象o进行强制类型转换，转换成union GCUnion* 类型 */
 #define cast_u(o)	cast(union GCUnion *, (o))
 
 /* macros to convert a GCObject into a specific value */
-/* 将GCObject类型转换为具体的值类型 */
+/* 下面的宏用于将一个GCObject转换为某一个具体的value对象 */
+
 #define gco2ts(o)  \
 	check_exp(novariant((o)->tt) == LUA_TSTRING, &((cast_u(o))->ts))
 #define gco2u(o)  check_exp((o)->tt == LUA_TUSERDATA, &((cast_u(o))->u))
@@ -294,6 +311,11 @@ union GCUnion {
 
 
 /* macro to convert a Lua object into a GCObject */
+/* 
+** obj2gco用于将某个需要进行垃圾回收的对象强转为GCObject对象，之所以可以这样转，
+** 是因为所有需要进行垃圾回收的对象都和GCObject有一样的头部，则类型转换后怎么使用
+** 程序可以通过上下文得知。
+*/
 #define obj2gco(v) \
 	check_exp(novariant((v)->tt) < LUA_TDEADKEY, (&(cast_u(v)->gc)))
 

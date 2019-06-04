@@ -429,7 +429,6 @@ LUALIB_API void luaL_checkany (lua_State *L, int arg) {
 ** 就将该字符串的地址和长度返回给上层调用者；如果不是字符串的话，那么尝试将该value
 ** 对象中的实际内容转换为字符串，然后将地址和长度返回给调用者。len存放字符串的长度。
 */
-
 LUALIB_API const char *luaL_checklstring (lua_State *L, int arg, size_t *len) {
   const char *s = lua_tolstring(L, arg, len);
   if (!s) tag_error(L, arg, LUA_TSTRING);
@@ -1127,6 +1126,14 @@ LUALIB_API void luaL_setfuncs (lua_State *L, const luaL_Reg *l, int nup) {
     int i;
 	/* 将函数的upvalues均压入堆栈 */
     for (i = 0; i < nup; i++)  /* copy upvalues to the top */
+      /*
+      ** 将待注册函数的自由变量一一再次全部压入栈中，而这些自由变量在调用luaL_setfuncs()函数的
+      ** 外层函数中已经按顺序一一压入栈中了，因此这里只是将他们再一次一一全部压入栈中。为什么需要
+      ** 重复做这样的事情呢？因为下面的lua_pushcclosre()函数会将本次循环压入栈中的自由变量保存到
+      ** CClosure对象的upvalues数组中，并从栈中弹出。为了下一个待注册函数能找到所需自由变量
+      ** 每个待注册的函数要自己负责将需要的自由变量再次压入栈中，使用完后再将它们弹出。
+      ** 这样就保证栈中始终有一份自由变量列表，可以被下一个待注册函数使用。
+      */
       lua_pushvalue(L, -nup);
     /*
     ** 将函数指针压入堆栈，从这个函数的处理流程可以看到，如果函数有upvalue，那么
@@ -1148,8 +1155,10 @@ LUALIB_API void luaL_setfuncs (lua_State *L, const luaL_Reg *l, int nup) {
   }
   /* 
   ** 由于上面已经将upvalue保存到了CClosure对象中，因此原先存放在堆栈中的upvalue就可以
-  ** 移除了，这里的处理就是将top指向函数存放在堆栈中的第二个upvalue的位置，这样就相当于
-  ** 将upvalue弹出了堆栈。这个地方是不是多余了？因此pushcclosure已经修改了L->top了。
+  ** 移除了。这个地方是不是多余了？这个地方其实没有多余，因为如果nup不为0的话，
+  ** 那么在调用该函数luaL_setfuncs()的外层函数中会将待注册函数的upvalue压入栈顶。现在
+  ** 这些自由变量已经成功添加到了待注册函数中了，那么在这里就可以将外层函数压入到栈中的
+  ** 自由变量全部弹出了。
   */
   lua_pop(L, nup);  /* remove upvalues */
 }
@@ -1299,6 +1308,7 @@ LUALIB_API void luaL_requiref (lua_State *L, const char *modname,
     lua_pushvalue(L, -1);  /* copy of module */
     lua_setglobal(L, modname);  /* _G[modname] = module */
   }
+  
   /* 
   ** 程序执行到这里，位于堆栈顶部的元素仍然是模块modname对应的table，这个位于堆栈顶部的table
   ** 在上层调用者中会将其从堆栈顶部中弹出。参考luaL_openlibs()。
@@ -1322,7 +1332,7 @@ LUALIB_API const char *luaL_gsub (lua_State *L, const char *s, const char *p,
   return lua_tostring(L, -1);
 }
 
-
+/* lua中用于内存申请的函数，其实主要就是对realloc()的封装，osize不用，ud不用 */
 static void *l_alloc (void *ud, void *ptr, size_t osize, size_t nsize) {
   (void)ud; (void)osize;  /* not used */
   if (nsize == 0) {

@@ -37,6 +37,10 @@
 
 
 /* ORDER RESERVED */
+/*
+** lua中保留的字符串，其实就是lua中的关键字，这里定义的每一个字符串都和llex.h文件中定义的
+** 保留字符串Token类型一一对应。
+*/
 static const char *const luaX_tokens [] = {
     "and", "break", "do", "else", "elseif",
     "end", "false", "for", "function", "goto", "if",

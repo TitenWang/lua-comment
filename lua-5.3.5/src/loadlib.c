@@ -287,11 +287,17 @@ static int noenv (lua_State *L) {
 /*
 ** Set a path
 */
+/* 根据envname等信息构造相应的path信息，然后以fieldname为键值，将path信息添加到package库对应的table中 */
 static void setpath (lua_State *L, const char *fieldname,
                                    const char *envname,
                                    const char *dft) {
+  /* 构造版本号信息对应的环境变量的名字，并压入栈顶部 */
   const char *nver = lua_pushfstring(L, "%s%s", envname, LUA_VERSUFFIX);
+  
+  /* 获取版本号信息对应的环境变量的具体内容 */
   const char *path = getenv(nver);  /* use versioned name */
+
+  /* 构造path的内容 */
   if (path == NULL)  /* no environment variable? */
     path = getenv(envname);  /* try unversioned name */
   if (path == NULL || noenv(L))  /* no environment variable? */
@@ -304,6 +310,7 @@ static void setpath (lua_State *L, const char *fieldname,
     lua_remove(L, -2); /* remove result from 1st 'gsub' */
   }
   setprogdir(L);
+  /* 将构造好的path路径以fieldname为键值加入到package库对应的table中。添加完后path路径会弹出栈顶部。 */
   lua_setfield(L, -3, fieldname);  /* package[fieldname] = path value */
   lua_pop(L, 1);  /* pop versioned variable name */
 }
@@ -565,23 +572,36 @@ static int searcher_preload (lua_State *L) {
   return 1;
 }
 
-
+/* 从package.searchers这个table中找到库名为name对应的库加载函数，例如数学库的luaopen_math() */
 static void findloader (lua_State *L, const char *name) {
   int i;
   luaL_Buffer msg;  /* to build error message */
   luaL_buffinit(L, &msg);
   /* push 'package.searchers' to index 3 in the stack */
+  /* 从包package中获取searchers这个table，并将其压入栈，栈索引值为3。 */
   if (lua_getfield(L, lua_upvalueindex(1), "searchers") != LUA_TTABLE)
     luaL_error(L, "'package.searchers' must be a table");
   /*  iterate over available searchers to find a loader */
   for (i = 1; ; i++) {
+    /* 以整数作为键值遍历package.searchers这个table，获取用于寻找库加载函数的搜索函数，并压入栈顶部 */
     if (lua_rawgeti(L, 3, i) == LUA_TNIL) {  /* no more searchers? */
       lua_pop(L, 1);  /* remove nil */
       luaL_pushresult(&msg);  /* create error message */
       luaL_error(L, "module '%s' not found:%s", name, lua_tostring(L, -1));
     }
+	
+    /* 将库名字压入堆栈，作为寻找库加载函数的搜索函数的参数 */
     lua_pushstring(L, name);
+
+	/*
+	** 调用搜索函数，1表示需要函数参数个数为1,2表示函数返回值个数。函数调用的返回值会压入栈顶部。
+	** 每个返回值都会占用一个栈单元。
+	*/
     lua_call(L, 1, 2);  /* call it */
+	/*
+	** 判断函数调用结果的第一个返回值是不是一个函数，如果是一个函数，说明找到了name对应的库加载函数。
+	** 此时库加载函数位于栈次顶部位置。栈顶部是另外一个返回值
+	*/
     if (lua_isfunction(L, -2))  /* did it find a loader? */
       return;  /* module loader found */
     else if (lua_isstring(L, -2)) {  /* searcher returned error message? */
@@ -593,27 +613,70 @@ static void findloader (lua_State *L, const char *name) {
   }
 }
 
-
+/* 关键字requuire的对应的处理函数 */
 static int ll_require (lua_State *L) {
+  /* 
+  ** 获取处于目前函数调用栈的栈索引值为1（对应L->ci->func + 1）的栈元素的内容，以字符串显示结果，
+  ** 即紧跟在require关键字后面的库名。如require "math"，name这里的name就是"math"。
+  */
   const char *name = luaL_checkstring(L, 1);
+  
+  /* 重新设置栈指针L->top，因为require后面的库名我们已经获取到了，那么就可以将其弹出栈顶部了 */
   lua_settop(L, 1);  /* LOADED table will be at index 2 */
+  
+  /* 从栈索引值（伪索引）为LUA_REGISTRYINDEX的注册表中获取键值为"_LOADED"的table，并压入栈顶部 */
   lua_getfield(L, LUA_REGISTRYINDEX, LUA_LOADED_TABLE);
+  
+  /* 
+  ** 从位于栈顶部的"_LOADED" table中获取键值为name对应的元素，并将该元素压入栈顶部。如果该库之前
+  ** 没有加载过，那么这个元素应该是一个nil；如果之前加载过，那么就应该是一个库级别的table，存放了
+  ** 对应库的函数和常量等信息。
+  */
   lua_getfield(L, 2, name);  /* LOADED[name] */
+
+  /* 如果该库已经加载过了，就不再加载一遍了，直接使用即可。 */
   if (lua_toboolean(L, -1))  /* is it there? */
     return 1;  /* package is already loaded */
   /* else must load package */
+  
+  /* 程序执行到这里，说明require的库还没加载过，那么此时位于栈顶部的元素是无用的，这里将其弹出栈顶部 */
   lua_pop(L, 1);  /* remove 'getfield' result */
+
+  /* 
+  ** 找到库名name对应的库加载函数，此时库加载函数位于栈次顶部单元，而栈顶部单元是搜索库加载函数的
+  ** 搜索函数的第二个返回值。
+  */
   findloader(L, name);
+
+  /* 将库名压入栈顶部，作为库加载函数的参数 */
   lua_pushstring(L, name);  /* pass name as argument to module loader */
+  /*
+  ** 交换栈顶部的库名和栈次顶部的搜索函数的第二个返回值，交换完成后，栈次顶部是库名字，而栈顶部
+  ** 则是库加载函数的搜索函数的第二个返回值。这两个值都要作为库加载函数的参数，库加载函数的第一个
+  ** 参数一定要是库名字。
+  */
   lua_insert(L, -2);  /* name is 1st argument (before search data) */
+  /* 这里会调用库加载函数，库加载的结果（一般来说一个table，包含了库函数和常量）会压入栈顶部 */
   lua_call(L, 2, 1);  /* run loader to load module */
+  /*
+  ** 判断库加载函数的执行结果是不是nil，如果不是nil，则将执行结果以库名name为键值添加到栈索引值为
+  ** 2的"_LOADED" table中，同时将执行结果弹出栈顶部。本函数开始部分已经将"_LOADED" table压入了
+  ** 栈索引值为2的地方。
+  */
   if (!lua_isnil(L, -1))  /* non-nil return? */
     lua_setfield(L, 2, name);  /* LOADED[name] = returned value */
+
+  /*
+  ** 如果库加载函数返回的是nil，那么就以name为键值，将bool值true添加到"_LOADED" table中，
+  ** 表示该库已经加载过了。
+  */
   if (lua_getfield(L, 2, name) == LUA_TNIL) {   /* module set no value? */
     lua_pushboolean(L, 1);  /* use true as result */
-    lua_pushvalue(L, -1);  /* extra copy to be returned */
+    lua_pushvalue(L, -1);  /* extra copy to be returned */ /* 这一步的目的是什么？暂时没看明白 */
     lua_setfield(L, 2, name);  /* LOADED[name] = true */
   }
+
+  /* 程序执行到这里，位于栈顶部的是"_LOADED" table */
   return 1;
 }
 
@@ -729,14 +792,27 @@ static const luaL_Reg ll_funcs[] = {
   {NULL, NULL}
 };
 
-
+/*
+** 创建存放了搜索函数的table，并将该table以"searchers"为键值存放到package库对应的库级别table中。
+** 该函数执行完之后，位于栈顶部的元素就是package库对应的库级别的table。
+*/
 static void createsearcherstable (lua_State *L) {
+  /* 定义搜索函数 */
   static const lua_CFunction searchers[] =
     {searcher_preload, searcher_Lua, searcher_C, searcher_Croot, NULL};
   int i;
   /* create 'searchers' table */
+  /*
+  ** 创建一个用于存放搜索函数的table，搜索函数存放在table的数组部分，用数字索引。
+  ** 该table创建完成之后会压入栈顶部。
+  */
   lua_createtable(L, sizeof(searchers)/sizeof(searchers[0]) - 1, 0);
   /* fill it with predefined searchers */
+  /*
+  ** 将预定义的搜索函数存入到table中，注意，搜索函数会有一个内容为'package'的自由变量，因此
+  ** 要将预定义的搜索函数以CClosure的方式添加到table中。除了函数自身之外，函数的自由变量也会
+  ** 存放到CClosure中。
+  */
   for (i=0; searchers[i] != NULL; i++) {
     lua_pushvalue(L, -2);  /* set 'package' as upvalue for all searchers */
     lua_pushcclosure(L, searchers[i], 1);
@@ -746,7 +822,13 @@ static void createsearcherstable (lua_State *L) {
   lua_pushvalue(L, -1);  /* make a copy of 'searchers' table */
   lua_setfield(L, -3, "loaders");  /* put it in field 'loaders' */
 #endif
+  /*
+  ** 将存放了搜索函数的table以"searchers"为键值，添加到libpackage对应的库级别table中，作为其子table。
+  ** 在这里之后就可以用"searchers"去package这个包对应的table中去获取存放了搜索函数的table了。
+  */
   lua_setfield(L, -2, "searchers");  /* put it in field 'searchers' */
+
+  /* 该函数执行完之后，位于栈顶部的元素就是package库对应的库级别的table。*/
 }
 
 
@@ -754,37 +836,129 @@ static void createsearcherstable (lua_State *L) {
 ** create table CLIBS to keep track of loaded C libraries,
 ** setting a finalizer to close all libraries when closing state.
 */
+/* 
+** 创建用于跟踪所有加载了的C库的CLIBS table，CLIBS table会以键值0存入到栈索引值为
+** LUA_REGISTRYINDEX的注册表中。
+*/
 static void createclibstable (lua_State *L) {
+  /* 
+  ** 创建一个空的table，即数组部分和hash表部分大小均为0，这个table会作为CLIBS table，
+  ** 执行完这条语句后，CLIBS table就位于栈顶部了。
+  */
   lua_newtable(L);  /* create CLIBS table */
+
+  /*
+  ** 创建另外一个表，作为CLIBS table的元表，执行完这条语句后，CLIBS table的元表就位于栈顶部了。
+  ** 而CLIBS table就位于栈次顶部。
+  */
   lua_createtable(L, 0, 1);  /* create metatable for CLIBS */
+
+  /* 将函数gctm压入栈顶部 */
   lua_pushcfunction(L, gctm);
+
+  /*
+  ** 将位于栈顶的函数gctm以键值“__gc”加入到第二条语句创建的那个表中，作为CLIBS table的finalizer。
+  ** 同时会将gctm从栈顶部弹出。
+  */
   lua_setfield(L, -2, "__gc");  /* set finalizer for CLIBS table */
+
+  /* 将第二条语句中创建的table作为CLIBS table的元表，同时将这个元表从栈顶部弹出 */
   lua_setmetatable(L, -2);
+
+  /* 程序执行到这里时，位于栈顶部的元素就是该函数一开始创建的CLIBS table */
+
+  /*
+  ** 将此时位于栈顶部的CLIBS table以0（CLIBS值为0）作为键值添加到栈索引值为LUA_REGISTRYINDEX的
+  ** 注册表中，后面就可以用0去注册表中索引CLIBS table了。执行完下面的语句之后，也会将CLIBS table
+  ** 从栈顶部弹出。
+  */
   lua_rawsetp(L, LUA_REGISTRYINDEX, &CLIBS);  /* set CLIBS table in registry */
 }
 
-
+/*
+** package库的加载函数，当该函数执行完毕后，位于栈顶的就是package库对应的table，里面存放了
+** package库的函数和常量。
+*/
 LUAMOD_API int luaopen_package (lua_State *L) {
+  /* 
+  ** 创建用于跟踪所有加载了的C库的CLIBS table，CLIBS table会以键值0存入到栈索引值为
+  ** LUA_REGISTRYINDEX的注册表中。
+  */
   createclibstable(L);
+
+  /* 
+  ** 将packagelib中定义的函数及其名字存入一个table中，这个table是库级别的，
+  ** 即一个库对应一个table。执行完luaL_newlib()之后，这个table就位于栈
+  ** 最顶部。
+  */
   luaL_newlib(L, pk_funcs);  /* create 'package' table */
+
+  /*
+  ** 创建存放了搜索函数的table，并将该table以"searchers"为键值存放到package库对应的库级别table中。
+  ** 该函数执行完之后，位于栈顶部的元素就是package库对应的库级别的table。搜索函数会根据库名找到
+  ** 库对应的加载函数。其实，package对应的table本身也会以"package"为键值加入到"_LOADED" table中。
+  */
   createsearcherstable(L);
   /* set paths */
+  /* 将path，cpath等信息添加到package库对应的table中 */
   setpath(L, "path", LUA_PATH_VAR, LUA_PATH_DEFAULT);
   setpath(L, "cpath", LUA_CPATH_VAR, LUA_CPATH_DEFAULT);
   /* store config information */
+  /* 将配置信息压入栈顶部，此时位于栈次顶部的就是package库对应的table */
   lua_pushliteral(L, LUA_DIRSEP "\n" LUA_PATH_SEP "\n" LUA_PATH_MARK "\n"
                      LUA_EXEC_DIR "\n" LUA_IGMARK "\n");
+
+  /* 将位于栈顶部的配置信息，以"config"为键值添加到package库对应的table中，并将配置信息弹出栈顶 */
   lua_setfield(L, -2, "config");
+  
   /* set field 'loaded' */
+  /*
+  ** 从栈索引值（伪索引）为LUA_REGISTRYINDEX的注册表中获取"_LOADED" table，并压入栈顶部。然后将
+  ** 此时位于栈顶部的"_LOADED" table以"loaded"为键值加入到package库的table中成为其子table，并将
+  ** "_LOADED" table从栈顶弹出，经过这一系列操作后，注册表中的"_LOADED" table和package库对应的
+  ** table中的"package.loaded"就是同一个表，存放的就是已经加载了的库的table。另外，package对应的
+  ** table本身也会以"package"为键值加入到"_LOADED" table中。
+  */
   luaL_getsubtable(L, LUA_REGISTRYINDEX, LUA_LOADED_TABLE);
   lua_setfield(L, -2, "loaded");
+  
   /* set field 'preload' */
+  /*
+  ** 从栈索引值（伪索引）为LUA_REGISTRYINDEX的注册表中获取"_PRELOAD" table，并压入栈顶部。然后将
+  ** 此时位于栈顶部的"_PRELOAD" table以"preload"为键值加入到package库的table中成为其子table，并将
+  ** "_LOADED" table从栈顶弹出，经过这一系列操作后，注册表中的"_PRELOAD" table和package库对应的
+  ** table中的"package.preload"就是同一个表，存放的就是已经加载了的库的table。
+  */
   luaL_getsubtable(L, LUA_REGISTRYINDEX, LUA_PRELOAD_TABLE);
   lua_setfield(L, -2, "preload");
+  
+  /* 程序执行到这里，此时位于栈顶部的元素仍然是package库对应的table */
+
+  /* 将_G table压入栈顶部 */
   lua_pushglobaltable(L);
+  
+  /*
+  ** 此时位于栈次顶部的是package库对应table，这里将该table再次压入栈顶，之后位于次栈顶的是_G table。
+  ** 这里之所以要将package库对应的table再次压入栈顶是为了要将该table作为ll_funcs中定义的函数的自由
+  ** 变量，因此这里先将他们压入栈顶，luaL_setfuncs()负责将其设置成ll_funcs中定义函数的upvalue。
+  ** 此时位于栈顶部的是package库对应的table，栈次顶部的是_G table，栈次次顶部的仍然是package库对应的table。
+  ** 这里一定要分析清楚。
+  */
   lua_pushvalue(L, -2);  /* set 'package' as upvalue for next lib */
+
+  /* 
+  ** 将全局变量ll_funcs中的函数注册到_G table中，键值是函数的名字，内容就是ll_funcs中定义的函数对应的
+  ** CClosure对象。因为要将package库对应的库级别的table作为ll_funcs中定义的函数的自由变量，因此
+  ** 要用CClosure对象。luaL_setfuncs()在结束的时候会将重复压入栈顶的package对应的table（作为自由变量）
+  ** 弹出堆栈。
+  */
   luaL_setfuncs(L, ll_funcs, 1);  /* open lib into global table */
+  
+  /* 程序执行到这里，此时位于栈顶部的是_G table，栈次顶部的是package库对应的table */
+  /* 将_G table弹出栈顶 */
   lua_pop(L, 1);  /* pop global table */
+
+  /* 程序执行到这里，位于栈顶的仍然是package库对应的table。 */
   return 1;  /* return 'package' table */
 }
 

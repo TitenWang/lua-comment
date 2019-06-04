@@ -74,6 +74,7 @@ l_noret luaM_toobig (lua_State *L) {
 /*
 ** generic allocation routine.
 */
+/* 通用的内存申请函数 */
 void *luaM_realloc_ (lua_State *L, void *block, size_t osize, size_t nsize) {
   void *newblock;
   global_State *g = G(L);

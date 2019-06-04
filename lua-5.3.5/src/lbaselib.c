@@ -483,16 +483,43 @@ static const luaL_Reg base_funcs[] = {
 };
 
 
+/*
+** base库的加载函数，当该函数执行完毕后，位于栈顶的就是base库对应的table，里面存放了
+** base库的函数和常量。base库的所有库函数和常量其实都是保存在_G表中的，即base对应的
+** table其实就是_G表。_G表最初始的创建是在main()函数中调用luaL_newstate()进行创建的，
+** 具体是在init_registry()函数中。
+*/
 LUAMOD_API int luaopen_base (lua_State *L) {
   /* open lib into global table */
+  /* 将_G table压入栈顶部 */
   lua_pushglobaltable(L);
+
+  /* 
+  ** 将全局变量base_funcs中的函数及其名字注册到此时位于栈顶部_G table中，键值是函数的名字，
+  ** 内容就是ll_funcs中定义的函数对应的CClosure对象。另外注意到base_funcs中的函数没有自由变量。
+  */
   luaL_setfuncs(L, base_funcs, 0);
+  
+  /* 程序执行到这里，位于栈顶部的仍然是_G table */
+  
   /* set global _G */
+  /*
+  ** 将位于栈顶部的table（其实就是_G）再一次压入栈顶部，此时栈顶部和栈次顶部的都是这个table，
+  ** 然后将栈顶部的table以"_G"为索引添加到栈次顶部的table中，即变成了_G._G。之后将栈顶部的
+  ** _G弹出栈顶。位于栈次顶部的_G又变成了新的栈顶部内容。
+  */
   lua_pushvalue(L, -1);
   lua_setfield(L, -2, "_G");
+
+  /* 将lua版本信息以"_VERSION"为键值加入到_G表中 */
   /* set global _VERSION */
   lua_pushliteral(L, LUA_VERSION);
   lua_setfield(L, -2, "_VERSION");
+
+  /* 
+  ** 程序执行到之类，栈顶部的内容是_G表。_G表最初始的创建是在main()函数中调用luaL_newstate()
+  ** 进行创建的，具体是在init_registry()函数中。
+  */
   return 1;
 }
 

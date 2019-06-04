@@ -40,7 +40,18 @@
 ** (-LUAI_MAXSTACK is the minimum valid index; we keep some free empty
 ** space after that to help overflow detection)
 */
+/* 
+** 伪栈索引，即这个索引所代表的地址并不在栈中。这个索引是lua中预定义的注册表的索引，
+** C函数可以往这里存放任何想存放的Lua value。注册表是一个table，但是往这个table里面
+** 添加元素的时候，键值不能用整数，因为整数的键值是被保留的。
+*/
 #define LUA_REGISTRYINDEX	(-LUAI_MAXSTACK - 1000)
+
+/*
+** 当一个C函数被调用的时候，它的所有自由变量都会存在某个特定的地方，宏lua_upvalueindex()
+** 就是用来获取其自由变量的栈索引（其实也是一个伪栈索引）。例如某个被调用C函数有n个自由变量，
+** 那么lua_upvalueindex(1)就是其第一个自由变量，lua_upvalueindex(n)是其第n个自由变量。
+*/
 #define lua_upvalueindex(i)	(LUA_REGISTRYINDEX - (i))
 
 
@@ -82,7 +93,7 @@ typedef struct lua_State lua_State;
 
 /* predefined values in the registry */
 #define LUA_RIDX_MAINTHREAD	1
-/* _G在堆栈中的索引 */
+/* _G表在栈索引值（伪索引）为LUA_REGISTRYINDEX的注册表中的索引 */
 #define LUA_RIDX_GLOBALS	2
 #define LUA_RIDX_LAST		LUA_RIDX_GLOBALS
 
@@ -352,8 +363,14 @@ LUA_API void      (lua_setallocf) (lua_State *L, lua_Alloc f, void *ud);
 */
 #define lua_newtable(L)		lua_createtable(L, 0, 0)
 
+/*
+** 宏lua_register()用于将C函数注册到_G这个表中，键值为函数的名字。
+** 先将函数对应的CClosure对象压入栈顶部，然后将位于栈顶部的这个CClosure对象添加到_G表中，
+** 并将其弹出栈顶。
+*/
 #define lua_register(L,n,f) (lua_pushcfunction(L, (f)), lua_setglobal(L, (n)))
 
+/* 将函数对应的CClosure对象压入栈顶部 */
 #define lua_pushcfunction(L,f)	lua_pushcclosure(L, (f), 0)
 
 #define lua_isfunction(L,n)	(lua_type(L, (n)) == LUA_TFUNCTION)
@@ -367,6 +384,7 @@ LUA_API void      (lua_setallocf) (lua_State *L, lua_Alloc f, void *ud);
 
 #define lua_pushliteral(L, s)	lua_pushstring(L, "" s)
 
+/* 从注册表中取出_G table，并压入栈顶部 */
 #define lua_pushglobaltable(L)  \
 	((void)lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_GLOBALS))
 

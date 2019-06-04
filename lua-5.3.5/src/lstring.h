@@ -15,7 +15,10 @@
 /* 计算一个字符串对象需要的总内存大小，包括头部和内容两部分 */
 #define sizelstring(l)  (sizeof(union UTString) + ((l) + 1) * sizeof(char))
 
+/* 计算一个Userdata对象需要的总内存大小，包括头部和内容两部分 */
 #define sizeludata(l)	(sizeof(union UUdata) + (l))
+
+/* 获取Userdata对象中内容部分的大小 */
 #define sizeudata(u)	sizeludata((u)->len)
 
 #define luaS_newliteral(L, s)	(luaS_newlstr(L, "" s, \
