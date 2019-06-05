@@ -331,11 +331,21 @@ static void tryfuncTM (lua_State *L, StkId func) {
 ** expressions, multiple results for tail calls/single parameters)
 ** separated.
 */
+/*
+** res指向为当前函数指针的位置，在moveresults的时候，会用来存放函数的
+** 第一个返回值，其余返回值依次往后，这样做是为了节省栈空间，因为函数调用已经
+** 执行完了，那么那些参数和函数指针本身就没用了，只要保存函数调用的返回值就可以
+** 了，因此将函数返回值移动到函数指针所在位置开始依次往后存放。在该函数最后，
+** 会更新栈指针L->top，使其指向挪动后的最后一个返回值的下一个栈单元。
+*/
 static int moveresults (lua_State *L, const TValue *firstResult, StkId res,
                                       int nres, int wanted) {
   switch (wanted) {  /* handle typical cases separately */
     case 0: break;  /* nothing to move */
     case 1: {  /* one result needed */
+      /*
+      ** 如果函数预期返回一个值，而实际返回0个值，那么就将nil对象作为其最后返回值。
+      */
       if (nres == 0)   /* no results? */
         firstResult = luaO_nilobject;  /* adjust with nil */
       setobjs2s(L, res, firstResult);  /* move it to proper place */
@@ -343,6 +353,7 @@ static int moveresults (lua_State *L, const TValue *firstResult, StkId res,
     }
     case LUA_MULTRET: {
       int i;
+      /* 如果有多个返回值，则从res指向的位置开始，依次往后面存放，同时更新栈指针L->top */
       for (i = 0; i < nres; i++)  /* move all results to correct place */
         setobjs2s(L, res + i, firstResult + i);
       L->top = res + nres;
@@ -350,6 +361,12 @@ static int moveresults (lua_State *L, const TValue *firstResult, StkId res,
     }
     default: {
       int i;
+      /*
+      ** 如果实际返回值个数多于期望的返回值个数，那么只将期望的返回值挪到指定位置，
+      ** 实际返回值中多余的那部分就直接丢弃了；如果实际的返回值个数少于期望的返回值
+      ** 个数，那么将实际返回值先挪到指定位置，缺少的那部分返回值都用nil对象来填充。
+      ** 最后，更新栈指针L->top，使其指向最后一个返回值的下一个栈单元。
+      */
       if (wanted <= nres) {  /* enough results? */
         for (i = 0; i < wanted; i++)  /* move wanted results to correct place */
           setobjs2s(L, res + i, firstResult + i);
@@ -363,6 +380,8 @@ static int moveresults (lua_State *L, const TValue *firstResult, StkId res,
       break;
     }
   }
+
+  /* 更新栈指针L->top，使其指向最后一个返回值的下一个栈单元 */
   L->top = res + wanted;  /* top points after the last result */
   return 1;
 }
@@ -373,8 +392,10 @@ static int moveresults (lua_State *L, const TValue *firstResult, StkId res,
 ** moves current number of results to proper place; returns 0 iff call
 ** wanted multiple (variable number of) results.
 */
+/* 对当前函数调用做一些收尾工作，比如将函数返回值挪到适当位置，并退回到上一层函数调用中去。 */
 int luaD_poscall (lua_State *L, CallInfo *ci, StkId firstResult, int nres) {
   StkId res;
+  /* 取出在函数调用之前保存在CallInfo对象中预期的函数返回值个数。 */
   int wanted = ci->nresults;
   if (L->hookmask & (LUA_MASKRET | LUA_MASKLINE)) {
     if (L->hookmask & LUA_MASKRET) {
@@ -384,14 +405,32 @@ int luaD_poscall (lua_State *L, CallInfo *ci, StkId firstResult, int nres) {
     }
     L->oldpc = ci->previous->u.l.savedpc;  /* 'oldpc' for caller function */
   }
+
+  /*
+  ** 将res指向为当前函数指针的位置，在下面的moveresults的时候，会用来存放函数的
+  ** 第一个返回值，其余返回值依次往后，这样做是为了节省栈空间，因为函数调用已经
+  ** 执行完了，那么那些参数和函数指针本身就没用了，只要保存函数调用的返回值就可以
+  ** 了，因此将函数返回值移动到函数指针所在位置开始依次往后存放。
+  */
   res = ci->func;  /* res == final position of 1st result */
+  /* 
+  ** 由于当前函数调用已经执行完了，那么就需要返回上一层的函数调用栈了，因此将
+  ** L->ci设置为上一层的函数调用。
+  */
   L->ci = ci->previous;  /* back to caller */
   /* move results to proper place */
+  /*
+  ** 将res指向为当前函数指针的位置，在下面的moveresults的时候，会用来存放函数的
+  ** 第一个返回值，其余返回值依次往后，这样做是为了节省栈空间，因为函数调用已经
+  ** 执行完了，那么那些参数和函数指针本身就没用了，只要保存函数调用的返回值就可以
+  ** 了，因此将函数返回值移动到函数指针所在位置开始依次往后存放。在该函数最后，
+  ** 会更新栈指针L->top，使其指向挪动后的最后一个返回值的下一个栈单元。
+  */
   return moveresults(L, firstResult, res, nres, wanted);
 }
 
 
-
+/* next_ci()宏用于进入一个新的函数调用栈，函数调用层次变深。 */
 #define next_ci(L) (L->ci = (L->ci->next ? L->ci->next : luaE_extendCI(L)))
 
 
@@ -410,31 +449,59 @@ int luaD_poscall (lua_State *L, CallInfo *ci, StkId firstResult, int nres) {
 ** the execution ('luaV_execute') to the caller, to allow stackless
 ** calls.) Returns true iff function has been executed (C function).
 */
-/* luaD_precall()函数用于为一个函数调用做前期准备 */
+/* 
+** luaD_precall()函数用于为一个函数调用做前期准备，如果是C函数（包括C闭包）的话，
+** 就直接在这里执行了。
+*/
 int luaD_precall (lua_State *L, StkId func, int nresults) {
   lua_CFunction f;
   CallInfo *ci;
   switch (ttype(func)) {
     case LUA_TCCL:  /* C closure */
+      /* 获取待调用的函数指针 */
       f = clCvalue(func)->f;
       goto Cfunc;
     case LUA_TLCF:  /* light C function */
+      /* 获取待调用的函数指针 */
       f = fvalue(func);
      Cfunc: {
       int n;  /* number of returns */
+	  
+      /* checkstackp()用于确保当前函数调用栈有至少LUA_MINSTACK个单元 */
       checkstackp(L, LUA_MINSTACK, func);  /* ensure minimum stack size */
+	  
+	  /* 从lua_State的ci链表中获取一个CallInfo节点，用于存放当前函数调用栈的信息 */
       ci = next_ci(L);  /* now 'enter' new function */
       ci->nresults = nresults;
       ci->func = func;
+	  /*
+	  ** ci->top指向的是当前函数最后一个栈单元在数据栈中的位置，这里将其设置为L->top +  LUA_MINSTACK 
+	  ** 那么[func, L->top +  LUA_MINSTACK]都分配给了该函数调用过程。[func,L->top)之间是函数指针及其
+	  ** 形参的范围。注意到L->top并没有更新，指向的仍然是当前调用函数最后一个参数的下一个位置。
+	  */
       ci->top = L->top + LUA_MINSTACK;
       lua_assert(ci->top <= L->stack_last);
       ci->callstatus = 0;
       if (L->hookmask & LUA_MASKCALL)
         luaD_hook(L, LUA_HOOKCALL, -1);
       lua_unlock(L);
+	  
+	  /*
+	  ** 执行该C函数调用，C函数的调用结果会直接压入到栈中，从L->top指向的位置开始。函数执行过程
+	  ** 可以结合math库的某个函数来看，以math_abs()为例，该函数会根据自己的需要从func后面的栈单元
+	  ** 取出所需个数的参数，执行计算过程，将结果又压入到栈顶中，然后更新栈指针。函数调用的结果在
+	  ** 栈中是紧跟在函数参数之后的。在函数调用过程中，由于会往栈中压入调用结果，因此会更新L->top，
+	  ** 因此如果函数调用结果有n个，那么L->top = L->top + n，这点从math_abs()可以看出。那么函数的
+	  ** 第一个返回值在栈中的地址就是：L->top - n。
+	  */
       n = (*f)(L);  /* do the actual call */
       lua_lock(L);
       api_checknelems(L, n);
+	  
+      /*
+      ** 对该函数调用做一些收尾工作，比如将函数返回值挪到适当位置，并退回到上一层函数调用中去。
+      ** (L->top -n)是执行完函数调用后第一个函数调用结果的地址
+      */
       luaD_poscall(L, ci, L->top - n, n);
       return 1;
     }

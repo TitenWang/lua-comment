@@ -173,6 +173,7 @@ typedef unsigned long Instruction;
 ** metamethods, as these strings must be internalized;
 ** #("function") = 8, #("__newindex") = 10.)
 */
+/* 短字符串的最大长度 */
 #if !defined(LUAI_MAXSHORTLEN)
 #define LUAI_MAXSHORTLEN	40
 #endif

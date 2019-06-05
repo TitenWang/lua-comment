@@ -47,6 +47,7 @@ const char lua_ident[] =
 #define ispseudo(i)		((i) <= LUA_REGISTRYINDEX)
 
 /* test for upvalue */
+/* upvalue使用的也是伪索引，参考lua_upvalueindex() */
 #define isupvalue(i)		((i) < LUA_REGISTRYINDEX)
 
 /* test for valid but not pseudo index */
@@ -60,6 +61,7 @@ const char lua_ident[] =
 /*
 ** index2addr函数用于返回idx对应的value对象的内存地址。
 ** 如果idx>0，则返回的是ci->func+idx；如果idx<0，那么返回的是L->top + idx；
+** idx>0的情况，多用于操作函数调用栈时，idx<0多用于操作数据栈时和伪索引地址。
 */
 static TValue *index2addr (lua_State *L, int idx) {
   CallInfo *ci = L->ci;
@@ -79,13 +81,23 @@ static TValue *index2addr (lua_State *L, int idx) {
     return L->top + idx;
   }
   else if (idx == LUA_REGISTRYINDEX)
+    /* LUA_REGISTRYINDEX是一个伪索引，其实获取的是全局注册表，为了统一接口，而使用伪索引。 */
     return &G(L)->l_registry;
   else {  /* upvalues */
+  	/*
+  	** 这个地方需要结合lua_upvalueindex()这个宏来理解，假如我想要获取当前被调用C函数的第i（
+  	** 从1开始算）个自由变量，那么在调用index2addr()获取自由变量的地址时，我们要先通过调用宏
+  	** lua_upvalueindex()来获取传递给index2addr()的自由变量对应的索引值，那么宏lua_upvalueindex(i)
+  	** 返回的就是LUA_REGISTRYINDEX - (i)，即在这里index2addr()参数中的idx = (LUA_REGISTRYINDEX - (i))，
+  	** 那么下面的这条语句执行完之后，idx = i，也就是我们所需要的自由变量的编号。由于在lua中数组从1开始
+  	** 编号，而C中从0开始编号，因此用idx去索引upvalue数组时要减1。
+  	*/
     idx = LUA_REGISTRYINDEX - idx;
     api_check(L, idx <= MAXUPVAL + 1, "upvalue index too large");
     if (ttislcf(ci->func))  /* light C function? */
       return NONVALIDVALUE;  /* it has no upvalues */
     else {
+      /* C闭包含有自由变量，且存放在CClosure的upvalue数组成员中。这里返回upvalue数组元素的地址 */
       CClosure *func = clCvalue(ci->func);
       return (idx <= func->nupvalues) ? &func->upvalue[idx-1] : NONVALIDVALUE;
     }
@@ -97,6 +109,7 @@ static TValue *index2addr (lua_State *L, int idx) {
 ** to be called by 'lua_checkstack' in protected mode, to grow stack
 ** capturing memory errors
 */
+/* 延长虚拟栈大小，ud用于辅助计算新的虚拟栈大小。 */
 static void growstack (lua_State *L, void *ud) {
   int size = *(int *)ud;
   luaD_growstack(L, size);

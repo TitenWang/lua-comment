@@ -40,6 +40,9 @@
 ** (-LUAI_MAXSTACK is the minimum valid index; we keep some free empty
 ** space after that to help overflow detection)
 */
+
+/* 全局注册表和函数的自由变量用的都是伪索引。如果利用伪索引获取对应的地址，参考index2addr() */
+
 /* 
 ** 伪栈索引，即这个索引所代表的地址并不在栈中。这个索引是lua中预定义的注册表的索引，
 ** C函数可以往这里存放任何想存放的Lua value。注册表是一个table，但是往这个table里面
@@ -51,6 +54,7 @@
 ** 当一个C函数被调用的时候，它的所有自由变量都会存在某个特定的地方，宏lua_upvalueindex()
 ** 就是用来获取其自由变量的栈索引（其实也是一个伪栈索引）。例如某个被调用C函数有n个自由变量，
 ** 那么lua_upvalueindex(1)就是其第一个自由变量，lua_upvalueindex(n)是其第n个自由变量。
+** C函数的自由变量是存放在对应的CClosure对象的upavlue数组成员中。
 */
 #define lua_upvalueindex(i)	(LUA_REGISTRYINDEX - (i))
 

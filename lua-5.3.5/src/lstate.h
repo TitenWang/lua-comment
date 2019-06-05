@@ -78,7 +78,8 @@ struct lua_longjmp;  /* defined in ldo.c */
 ** global_State的strt成员
 */
 typedef struct stringtable {
-  /* 存放字符串的hash桶，具有相同hash值的字符串放在同一个桶中，
+  /* 
+  ** 存放字符串的hash桶，具有相同hash值的字符串放在同一个桶中，
   ** 同一个桶中的字符串用链表串接起来。当新创建一个字符串的时候，
   ** 首先计算出字符串对应的hash值，然后用这个hash值去索引stringtable中
   ** 的成员hash，得到具体的桶，然后在桶中存放该字符串，插入链表头部。
@@ -101,17 +102,22 @@ typedef struct stringtable {
 ** function can be called with the correct top.
 */
 /*
-** CallInfo结构体用于存放可一个函数调用过程相关的信息
+** CallInfo结构体用于存放一个函数调用过程相关的信息（当前函数的调用栈）。
+** CallInfo是一个标准的双向链表结构，这个双向链表结构表示一个逻辑上的函数调用链。
+** 在运行过程中，并不是每次调入更深层次的函数，就立刻构造出一个CallInfo节点。
+** 整个CallInfo链表会在运行中被反复复用。直到GC的时候才清理那些比当前调用层次
+** 更深的无用节点。
 */
 typedef struct CallInfo {
   /* func指向函数在栈中的位置 */
   StkId func;  /* function index in the stack */
 
   /*
-  ** top指向函数的最后一个参数在栈中的位置，意思就是说func和top之间的
-  ** 这部分内容就是函数存放在栈中的全部内容。
+  ** top指向函数的最后一个栈单元在栈中的位置，意思就是说func和top之间的
+  ** 这部分内容就是函数存放在栈中的全部内容，包括函数指针，参数值、函数调用结果等。
   */
   StkId	top;  /* top for this function */
+  /* 用于存放函数调用链。函数调用链用一个双向链表来链接起来。 */
   struct CallInfo *previous, *next;  /* dynamic call link */
   union {
     struct {  /* only for Lua functions */
@@ -161,7 +167,7 @@ typedef struct CallInfo {
 /*
 ** 'global state', shared by all threads of this state
 */
-/* lua中所有thread共享的状态信息 */
+/* Lua虚拟机中所有thread共享的全局状态信息 */
 typedef struct global_State {
   /* frealloc指定lua中用于申请内存的函数 */
   lua_Alloc frealloc;  /* function to reallocate memory */
@@ -170,12 +176,20 @@ typedef struct global_State {
   l_mem GCdebt;  /* bytes allocated not yet compensated by the collector */
   lu_mem GCmemtrav;  /* memory traversed by the GC */
   lu_mem GCestimate;  /* an estimate of the non-garbage memory in use */
-  stringtable strt;  /* hash table for strings */ /* 存放系统中所有字符串的hash表 */
+
+  /* 
+  ** 存放系统中所有短字符串的hash表，相同的短字符串在lua中只会存在一份，但
+  ** 长字符串时独立存放的，因此相同的长字符串可能会有多份。
+  */
+  stringtable strt;  /* hash table for strings */
+  
   /* 
   ** 保存全局的注册表，注册表就是一个全局的table（即整个虚拟机中只有一个注册表），
   ** 它只能被C代码访问，通常，它用来保存那些需要在几个模块中共享的数据
   */
   TValue l_registry;
+
+  /* lua中进行hash操作时的随机种子，例如给字符串对象进行hash时，会使用该成员的值。 */
   unsigned int seed;  /* randomized seed for hashes */
   lu_byte currentwhite;
   lu_byte gcstate;  /* state of garbage collector */
@@ -200,6 +214,8 @@ typedef struct global_State {
   int gcpause;  /* size of pause between successive GCs */
   int gcstepmul;  /* GC 'granularity' */
   lua_CFunction panic;  /* to be called in unprotected errors */
+
+  /* 主线程Mainthread对应的状态信息 */
   struct lua_State *mainthread;
   /* 存放版本号 */
   const lua_Number *version;  /* pointer to version number */
@@ -217,14 +233,17 @@ typedef struct global_State {
 /*
 ** 'per thread' state
 */
-/* lua_State结构体用于存放Lua虚拟机中单个线程（thread）的全局状态信息 */
+/*
+** lua_State结构体用于存放Lua虚拟机中单个线程（thread）的全局状态信息。Lua官方文档该
+** 类型的对象用于指代Lua中的一个线程，每个线程拥有自己独立的数据栈和函数调用链。因此
+** 该类型的对象的内容会随着线程的执行而改变，因此是一个动态数据的集合，描述了线程的
+** 执行状态机信息。
+*/
 struct lua_State {
   CommonHeader;
 
   /*
-  ** nci表示ci数组中包含的CallInfo对象的个数，即ci数组的长度。
-  ** 从这里可以看到，函数调用栈的大小是有限制的，因此需要考虑
-  ** 函数调用栈溢出的可能。
+  ** nci表示链表成员ci中包含的CallInfo对象的个数，即ci链表的元素个数。
   */
   unsigned short nci;  /* number of items in 'ci' list */
 
@@ -235,7 +254,31 @@ struct lua_State {
   StkId top;  /* first free slot in the stack */
   global_State *l_G;  /* l_G指向的是由所有thread共享的全局虚拟机信息 */
 
-  /* ci指向所有被调用的函数对应的CallInfo对象组成的数组的首地址 */
+  /*
+  ** 链表ci存放的是当前函数的调用链信息，调用链中的CallInfo由一个双向链表串起来。
+  ** 通过遍历这个ci链表，就可以获取到完成的调用链信息。在这个双向链表中，ci只是
+  ** 用于遍历这个双向链表，ci是一个指针，是没有分配具体的CallInfo对象所需内存的，
+  ** 而双向链表中的其他CallInfo节点都是分配了内存的，于是这个ci就用来根据需要指向
+  ** 其中的某一个CallInfo节点，指向当前正在进行的函数调用所对应的CallInfo节点。
+  ** ci->previous表示的是当前正在被调用的函数的调用者所对应的CallInfo对象，这一点从
+  ** luaD_poscall()函数中可以看出。举例如下：下面的cix就是指CallInfo对象
+  **    ----------    ----------    -----------
+  **    |  ci1   | -> |  ci2   | -> |   ci3   |
+  **    |(func1) | <- |(func2) | <- |(func3)  |
+  **    ----------    ----------    -----------
+  **      L->ci
+  ** func1()调用了func2()，func2()中调用了func3()。
+  ** 假设当前正在执行func1()这个函数，L->ci就会指向ci1，且此时ci链表中只会有最左边那个ci1，
+  ** 当func1执行到调用func2()的地方时，就会创建一个ci2，此时L->ci就会指向ci2，当func2执行到
+  ** 调用func3()的时候，将会创建一个ci3，相应的L->ci就会指向ci3，当func3()执行完了之后，在
+  ** luaD_poscall()中进行函数调用收尾工作时，就会将L->ci指向ci2(即ci3->previous)，表示当前正在
+  ** 进行的函数调用是func2。此时并不会立刻就是放ci3节点，因为func2()中可能还会调用其他函数，比如
+  ** func4()，那么这个时候就可以复用ci3这个CallInfo节点。func2()执行完毕之后，和上面func3()类似，
+  ** L->ci就会指向ci1（ci2->previous），这个时候ci2，ci3都不会被释放，因为可能func1中还会调用其他
+  ** 函数，被调用的函数中可能又会调用其他函数，那么ci2和ci3都可以复用。
+  ** 因此ci指向的双向链表的每一个CallInfo节点代表的就是一层函数调用。但有一点不变，就是L->ci指向的
+  ** 始终是函数调用链中当前正在执行的函数调用对应的CallInfo节点。
+  */
   CallInfo *ci;  /* call info for current function */
   const Instruction *oldpc;  /* last pc traced */
 
@@ -249,7 +292,6 @@ struct lua_State {
   struct lua_State *twups;  /* list of threads with open upvalues */
   struct lua_longjmp *errorJmp;  /* current error recover point */
 
-  /* base_ci存放的是当前正在被调用的函数的CallInfo信息 */
   CallInfo base_ci;  /* CallInfo for first level (C calling Lua) */
   volatile lua_Hook hook;
   ptrdiff_t errfunc;  /* current error handling function (stack index) */

@@ -193,6 +193,12 @@ static TString *createstrobj (lua_State *L, size_t l, int tag, unsigned int h) {
 
 /* 创建一个新的长字符串对象，未填入具体的字符串内容，只是申请了内存空间 */
 TString *luaS_createlngstrobj (lua_State *L, size_t l) {
+  /*
+  ** 从这里可以看出，长字符串对象一开始并没有计算hash值，而只是将用于计算hash值得种子传递进去，
+  ** 保存到TString对象的hash成员中，同时extra设置为0，表明并没有计算hash，即此时hash成员的值并不是
+  ** 字符串的hash值，后续需要进行字符串键匹配的时候，才会真正计算长字符串对象的hash值，并保存到
+  ** hash成员中，extra也会被置为1，表示此时的hash成员的值是字符串的hash值。
+  */
   TString *ts = createstrobj(L, l, LUA_TLNGSTR, G(L)->seed);
   ts->u.lnglen = l;
   return ts;
@@ -216,6 +222,10 @@ void luaS_remove (lua_State *L, TString *ts) {
 
 /*
 ** checks whether short string exists and reuses it or creates a new one
+*/
+/*
+** 短字符串对象的创建，并且创建之后会立即加入到全局状态信息（global_State）的strt成员中。
+** strt成员是一个hash表，专门用来存放Lua中的全部短字符串对象。长字符串对象则不会放置在这里。
 */
 static TString *internshrstr (lua_State *L, const char *str, size_t l) {
   TString *ts;
@@ -281,7 +291,7 @@ TString *luaS_newlstr (lua_State *L, const char *str, size_t l) {
     if (l >= (MAX_SIZE - sizeof(TString))/sizeof(char))
       luaM_toobig(L);
 
-    /* 创建一个长字符串对象 */
+    /* 创建一个长字符串对象，然后将参数传递进来的字符串拷贝到长字符串对象内部 */
     ts = luaS_createlngstrobj(L, l);
     memcpy(getstr(ts), str, l * sizeof(char));
     return ts;

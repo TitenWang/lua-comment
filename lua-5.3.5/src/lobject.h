@@ -138,6 +138,8 @@ struct GCObject {
 /*
 ** lua中所有可能值的联合体，通过包含GCObject *类型的成员gc，我们就可以将所有
 ** 需要进行垃圾回收（GC）的类型也包含进Value中，进而lua中所有类型的值都可以用Value来表示。
+** lua中的数据分为值类型和引用类型，引用类型需要有GC来维护其生命周期，Value中的gc成员则
+** 代表了所有的引用类型；Value中的其余成员就是值类型，直接存放在Value中，
 */
 typedef union Value {
   GCObject *gc;    /* collectable objects */
@@ -379,7 +381,11 @@ typedef TValue *StkId;  /* index to stack elements */
 */
 /*
 ** TString类型是lua中string类型的头部，string类型的具体内容紧跟在头部之后，
-** 并且在内存中需要按照8字节对齐。
+** 并且在内存中需要按照8字节对齐。所有的短字符串均存放在全局状态信息(global_State)
+** 的strt成员中，该成员是一个hash表。相同的短字符串在lua只有唯一一份，
+** 而长字符串则独立存放，从外部压入一个长字符串时，并不立刻计算其hash值，而是标记
+** 一下TString中的中的extra成员，表示暂未计算hash值，直到需要对长字符串做键匹配时，
+** 才计算其hash值。
 */
 typedef struct TString {
   CommonHeader;		/* 所有类型的公共头部 */
@@ -390,13 +396,14 @@ typedef struct TString {
   ** 如果一个短字符串不是保留字符串，那么extra就位0。
   */
   lu_byte extra;  /* reserved words for short strings; "has hash" for longs */
+  /* 由于Lua不以'\0'来识别字符串的长度，因此需要显示保存字符串的长度。 */
   lu_byte shrlen;  /* length for short strings */ /* 短字符串的长度 */
   unsigned int hash;	/* 该string对应的hash值，由string进行hash后得到 */
   union {
     size_t lnglen;  /* length for long strings */ /* 长字符串的长度 */
     /*
     ** lua是用散列桶来存放string的，hnext用于指向下一个具有相同hash值的string，
-    ** 即具有相同hash值的字符串是用链表来串接起来的。
+    ** 即具有相同hash值的字符串是用链表来串接起来的。（这个成员由短字符串对象使用。）
     */
     struct TString *hnext;  /* linked list for hash table */
   } u;

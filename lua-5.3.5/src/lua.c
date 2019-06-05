@@ -271,12 +271,16 @@ static void createargtable (lua_State *L, char **argv, int argc, int script) {
 }
 
 
+/*
+** 执行代码块，status表示的是对待执行代码块词法分析和语法分析的结果，如果结果OK，那么就
+** 可以开始执行代码块了。
+*/
 static int dochunk (lua_State *L, int status) {
   if (status == LUA_OK) status = docall(L, 0, 0);
   return report(L, status);
 }
 
-
+/* 加载并执行name指定的lua代码文件 */
 static int dofile (lua_State *L, const char *name) {
   return dochunk(L, luaL_loadfile(L, name));
 }

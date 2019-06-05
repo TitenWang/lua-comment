@@ -106,12 +106,20 @@ void luaE_setdebt (global_State *g, l_mem debt) {
 }
 
 
+/* 
+** 扩展lua_State对象中的ci双向链表，即双向链表的尾部插入一个新的对象，
+** 结合宏next_ci()一起看。因此，该双向链表中，处于链表中越深的成员，
+** 表示的函数调用层越深。
+*/
 CallInfo *luaE_extendCI (lua_State *L) {
+  /* 创建一个CallInfo对象 */
   CallInfo *ci = luaM_new(L, CallInfo);
   lua_assert(L->ci->next == NULL);
   L->ci->next = ci;
   ci->previous = L->ci;
   ci->next = NULL;
+  
+  /* ci链表的元素个数递增 */
   L->nci++;
   return ci;
 }
@@ -120,6 +128,7 @@ CallInfo *luaE_extendCI (lua_State *L) {
 /*
 ** free all CallInfo structures not in use by a thread
 */
+/* 释放函数调用链中的所有CallInfo对象 */
 void luaE_freeCI (lua_State *L) {
   CallInfo *ci = L->ci;
   CallInfo *next = ci->next;
@@ -135,6 +144,7 @@ void luaE_freeCI (lua_State *L) {
 /*
 ** free half of the CallInfo structures not in use by a thread
 */
+/* 压缩函数调用链，从ci链表中移除一半未使用的CallInfo节点，隔一个删一个。 */
 void luaE_shrinkCI (lua_State *L) {
   CallInfo *ci = L->ci;
   CallInfo *next2;  /* next's next */
@@ -176,12 +186,12 @@ static void stack_init (lua_State *L1, lua_State *L) {
   L1->stack_last = L1->stack + L1->stacksize - EXTRA_STACK;
   
   /* initialize first ci */
-  /* 初始化第一个函数调用信息 */
+  /* 初始化第一个函数调用对应的CallInfo信息 */
   ci = &L1->base_ci;
   ci->next = ci->previous = NULL;
   ci->callstatus = 0;
   
-  /* 第一个函数调用信息中的函数指针存放在虚拟栈的内存起始单元。 */
+  /* 第一个函数调用信息中的函数指针指向虚拟栈的内存起始单元。 */
   ci->func = L1->top;
   
   /* 往第一个函数调用信息中的函数指针对应的单元中写入nil对象 */
@@ -194,7 +204,7 @@ static void stack_init (lua_State *L1, lua_State *L) {
   L1->ci = ci;
 }
 
-
+/* 释放虚拟栈。 */
 static void freestack (lua_State *L) {
   if (L->stack == NULL)
     return;  /* stack not completely built yet */
