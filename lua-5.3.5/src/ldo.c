@@ -81,13 +81,26 @@
 
 
 /* chain list of long jump buffers */
+/* 包含了返回点信息的链表节点 */
 struct lua_longjmp {
+  /*
+  ** 用于串联该线程中的多个返回点，因为一个线程中可能会运行多个受保护的代码段，这样就需要
+  ** 设置多个返回点。注意，往该链表中插入节点是插入到头部的，而且越早加入该链表的节点表示
+  ** 越早之前的返回点，因此链表头部节点表示最近一次设置的返回点信息。previous指针指向的
+  ** 是链表的下一个节点，表示的是更早之前的返回点。
+  */
   struct lua_longjmp *previous;
+  /* 异常处理机制相关的东西，如对于C来说，一般是jmp_buf类型 */
   luai_jmpbuf b;
+  
+  /* 受保护代码运行出错的错误码 */
   volatile int status;  /* error code */
 };
 
-
+/*
+** 将errcode对象的错误对象设置到oldtop指向的栈单元中，可以从最后一条语句看到，oldtop会被当做是
+** 新的栈顶部单元。
+*/
 static void seterrorobj (lua_State *L, int errcode, StkId oldtop) {
   switch (errcode) {
     case LUA_ERRMEM: {  /* memory error? */
@@ -103,16 +116,36 @@ static void seterrorobj (lua_State *L, int errcode, StkId oldtop) {
       break;
     }
   }
+  /* 将栈指针设置到oldtop指向的栈单元的下一个单元，那么oldtop指向的栈单元就是栈顶部单元了。 */
   L->top = oldtop + 1;
 }
 
-
+/* 
+** 在保护模式中执行代码发生了异常，则会通过这个函数来异常，如果使用的C语言机制的话，
+** 那就是调用longjmp()，跳转到执行的这段发生了异常的代码之前。结合函数luaD_rawrunprotected()
+** 能较好地理解这一流程。
+*/
 l_noret luaD_throw (lua_State *L, int errcode) {
+  /*
+  ** 如果L->errorJmp链表成员不为空，那么说明当前线程注册了错误处理函数，其实就是设置了返回点信息。
+  ** 且L->errorJmp链表中越靠近头部的节点表示越近的返回点，越靠近尾部的节点对应的是更早之前设置的返回点。
+  ** 在函数中会跳转到最近的返回点（最后加入到该链表的返回点）中，并设置本次执行受保护代码出错的错误码
+  ** 到包含了返回点信息的节点中。注意，如果线程自己设置了错误处理函数，则此时并不会将错误码errcode对应
+  ** 的错误对象压入出错函数所在栈单元中，这点和下面的主线程分支处理不同，而会在调用完
+  ** luaD_rawrunprotected()之后再设置，这点可以参考luaD_pcall()。
+  */
   if (L->errorJmp) {  /* thread has an error handler? */
     L->errorJmp->status = errcode;  /* set status */
     LUAI_THROW(L, L->errorJmp);  /* jump to it */
   }
   else {  /* thread has no error handler */
+    /*
+    ** 程序执行到这里，说明当前线程没有设置错误处理函数，即没有设置可用的返回点信息，这个时候由于
+    ** 当前线程出现了异常，那么就将错误码设置到该线程对应的lua_State的status成员中。然后检查主线程
+    ** 中是否设置了错误处理函数，如果设置了，那么将出错的对象压入主线程的栈顶部，并跳转到主线程中
+    ** 最后一次设置的返回点。如果主线程中也没有设置异常处理函数，则先判断全局状态信息中是否设置了
+    ** panic()函数，如果设置了的话，还有机会在panic()处理错误并跳出异常；否则进程会调用abort()退出。
+    */
     global_State *g = G(L);
     L->status = cast_byte(errcode);  /* mark it as dead */
     if (g->mainthread->errorJmp) {  /* main thread has a handler? */
@@ -120,30 +153,74 @@ l_noret luaD_throw (lua_State *L, int errcode) {
       luaD_throw(g->mainthread, errcode);  /* re-throw in main thread */
     }
     else {  /* no handler at all; abort */
+      /* 如果设置了panic()函数，则做如下处理；否则调用abort()退出进程。 */
       if (g->panic) {  /* panic function? */
+	  	
+        /* 保存错误信息到栈顶部 */
         seterrorobj(L, errcode, L->top);  /* assume EXTRA_STACK */
         if (L->ci->top < L->top)
           L->ci->top = L->top;  /* pushing msg. can break this invariant */
         lua_unlock(L);
+		
+        /* 调用panic()函数，在该函数中还有一次机会跳出异常。 */
         g->panic(L);  /* call panic function (last chance to jump out) */
       }
+	  
+	  /* 进程异常退出 */
       abort();
     }
   }
 }
 
-
+/*
+** 以受保护的方式运行函数f。
+** 在调用f之前先调用setjump()函数初始化jmp buff对象，即返回点的相关信息。这样才能在
+** 执行f出问题后，让线程返回到调用f之前这个状态来。设置好返回点相关的信息之后，就调用
+** 函数f了，这个过程在LUAI_TRY()这个宏中完成的。
+*/
 int luaD_rawrunprotected (lua_State *L, Pfunc f, void *ud) {
   unsigned short oldnCcalls = L->nCcalls;
+  
+  /*
+  ** 每个线程L中都会保存该线程需要的返回点信息，这个是通过lua_State中的链表成员errorJmp
+  ** 实现的。由于每运行一段受保护的代码，都要设置一个返回点，以让线程在运行受保护代码发生
+  ** 错误时能返回到执行受保护代码之前。一个线程可能会运行多段受保护的代码，因此也就有多个
+  ** 返回点信息，多个返回点信息就是通过lua_State中的errorJmp这个链表成员串起来的。
+  ** 在下面的语句中将要以受保护的方式来运行函数f，那么就需要在执行函数f之前设置好返回点
+  ** 相关的信息，并将包含了返回点信息的类型为struct lua_longjmp的节点加入到lua_State中的
+  ** errorJmp这个链表成员中。执行完f之后，就将该节点信息从lua_State中的errorJmp这个链表成员
+  ** 中移除，因为f执行完之后，就不在需要返回点信息了。
+  ** 以受保护的方式运行的函数f中肯定包含了longjmp()函数调用，longjmp()函数调用被封装成了
+  ** 宏LUAI_THROW()。只有在f中调用了longjmp()才能回到调用了setjump()函数的这里。
+  */
+
   struct lua_longjmp lj;
   lj.status = LUA_OK;
   lj.previous = L->errorJmp;  /* chain new error handler */
+  
+  /*
+  ** 将当前的返回点信息设置到L->errorJmp链表成员的头部，这样如果调用f出错了，在luaD_throw()中
+  ** 就会使用L->errorJmp链表头部节点包含的返回点信息执行跳转。这样就回到到了调用f之前的位置。
+  */
   L->errorJmp = &lj;
+  
   LUAI_TRY(L, &lj,
     (*f)(L, ud);
   );
+
+  /* f已经执行完了，就不再需要预防f出错的返回点信息了，将其从链表中移除。 */
   L->errorJmp = lj.previous;  /* restore old error handler */
   L->nCcalls = oldnCcalls;
+
+  /* 对于运行出错了的情况，结合luaD_thrown()我们知道，错误信息已经压倒栈顶部了。 */
+
+  /*
+  ** lj.status在函数开始处被初始化成了LUA_OK，如果执行f的时候没出错，那其值就是LUA_OK，
+  ** 如果执行f出错了，由于f中会调用luaD_throw()，所以lj.status会在luaD_throw()中被设置为
+  ** 相应的错误码。我们看到luaD_throw()函数中设置的是lua_State对象中的errorJmp成员的status，
+  ** 其实就是下面这个lj的status，因为在该函数的上面已经将lj设置到了lua_State对象中的errorJmp
+  ** 成员中。
+  */
   return lj.status;
 }
 
@@ -155,9 +232,15 @@ int luaD_rawrunprotected (lua_State *L, Pfunc f, void *ud) {
 ** Stack reallocation
 ** ===================================================================
 */
+/* 
+** 根据旧栈和新栈的地址差来校正线程状态信息lua_State中某些信息的地址。
+** oldstack指向的是旧栈的起始地址。
+*/
 static void correctstack (lua_State *L, TValue *oldstack) {
   CallInfo *ci;
   UpVal *up;
+  
+  /* 新栈的栈指针 */
   L->top = (L->top - oldstack) + L->stack;
   for (up = L->openupval; up != NULL; up = up->u.open.next)
     up->v = (up->v - oldstack) + L->stack;
@@ -175,28 +258,45 @@ static void correctstack (lua_State *L, TValue *oldstack) {
 
 
 void luaD_reallocstack (lua_State *L, int newsize) {
+  /* 保存旧栈地址 */
   TValue *oldstack = L->stack;
   int lim = L->stacksize;
   lua_assert(newsize <= LUAI_MAXSTACK || newsize == ERRORSTACKSIZE);
   lua_assert(L->stack_last - L->stack == L->stacksize - EXTRA_STACK);
+  
+  /* 申请一个新栈，存放到L->stack中。 */
   luaM_reallocvector(L, L->stack, L->stacksize, newsize, TValue);
+
+  /* 将和旧栈相比多出来的那部分栈单元初始化 */
   for (; lim < newsize; lim++)
     setnilvalue(L->stack + lim); /* erase new segment */
+
+  /* 记录新栈的大小信息和内存上限 */
   L->stacksize = newsize;
   L->stack_last = L->stack + newsize - EXTRA_STACK;
+
+  /* 根据旧栈和新栈的地址差来校正线程状态信息lua_State中某些信息的地址 */
   correctstack(L, oldstack);
 }
 
 
+/* 扩充栈 */
 void luaD_growstack (lua_State *L, int n) {
   int size = L->stacksize;
   if (size > LUAI_MAXSTACK)  /* error after extra size? */
     luaD_throw(L, LUA_ERRERR);
   else {
+  	/* 计算扩充后栈的大小 */
     int needed = cast_int(L->top - L->stack) + n + EXTRA_STACK;
     int newsize = 2 * size;
     if (newsize > LUAI_MAXSTACK) newsize = LUAI_MAXSTACK;
     if (newsize < needed) newsize = needed;
+
+	/*
+	** 如果扩充后的大小超过了，则进行错误处理，也有可能会抛出异常。
+	** 如果没有的话，那么就调用luaD_reallocstack()扩充原有栈或者是
+	** 申请一个新的栈，然后将旧栈中的数据拷贝到新栈中，并释放旧栈。
+	*/
     if (newsize > LUAI_MAXSTACK) {  /* stack overflow? */
       luaD_reallocstack(L, ERRORSTACKSIZE);
       luaG_runerror(L, "stack overflow");
@@ -206,7 +306,7 @@ void luaD_growstack (lua_State *L, int n) {
   }
 }
 
-
+/* 返回栈单元使用的个数 */
 static int stackinuse (lua_State *L) {
   CallInfo *ci;
   StkId lim = L->top;
@@ -218,6 +318,7 @@ static int stackinuse (lua_State *L) {
 }
 
 
+/* 压缩栈 */
 void luaD_shrinkstack (lua_State *L) {
   int inuse = stackinuse(L);
   int goodsize = inuse + (inuse / 8) + 2*EXTRA_STACK;
@@ -236,7 +337,7 @@ void luaD_shrinkstack (lua_State *L) {
     condmovestack(L,{},{});  /* (change only for debugging) */
 }
 
-
+/* 将栈指针递增1 */
 void luaD_inctop (lua_State *L) {
   luaD_checkstack(L, 1);
   L->top++;
@@ -312,15 +413,34 @@ static StkId adjust_varargs (lua_State *L, Proto *p, int actual) {
 ** it in stack below original 'func' so that 'luaD_precall' can call
 ** it. Raise an error if __call metafield is not a function.
 */
+/*
+** 有些对象是通过元表来驱动函数调用行为的。这个时候需要通过tryfuncTM()来找到真正的
+** 调用函数。在lua中，根据元方法进行的函数调用和普通的函数调用会有一定的区别，通过
+** 元方法进行的函数调用，需要将拥有该元方法的对象自身作为元方法的第一个参数，这个时候
+** 就需要移动栈的内容，将对象插到第一个参数位置处。真正的调用函数就是元方法"__call"的值。
+** tryfuncTM()参数中的func就是那个通过元表来驱动函数调用的对象。
+*/
 static void tryfuncTM (lua_State *L, StkId func) {
+  /*
+  ** 从func指向的TValue对象的元表中尝试获取TM_CALL对应的值对象。
+  ** 意思就是说从func指向的TValue对象的元表中获取键值为"__call"的值对象。
+  */
   const TValue *tm = luaT_gettmbyobj(L, func, TM_CALL);
   StkId p;
+  /* 判断"__call"对应的值对象是不是一个函数对象，如果不是，那么就报错。 */
   if (!ttisfunction(tm))
     luaG_typeerror(L, func, "call");
   /* Open a hole inside the stack at 'func' */
+  
+  /*
+  ** 将函数调用栈中的参数和func指向的TValue对象都往后挪一个单元，这样TValue对象就
+  ** 变成了函数的第一个参数了，下面会在func指向的栈单元中放入真正的调用函数（从元表中找到的）。
+  */
   for (p = L->top; p > func; p--)
     setobjs2s(L, p, p-1);
   L->top++;  /* slot ensured by caller */
+  
+  /* 将func指向的TValue对象改为tm指向的对象，即从元表中获取到的函数对象 */
   setobj2s(L, func, tm);  /* tag method is the new function to be called */
 }
 
@@ -451,7 +571,9 @@ int luaD_poscall (lua_State *L, CallInfo *ci, StkId firstResult, int nres) {
 */
 /* 
 ** luaD_precall()函数用于为一个函数调用做前期准备，如果是C函数（包括C闭包）的话，
-** 就直接在这里执行了。
+** 就直接在这里执行了。返回值为0，表示待执行函数是一个lua函数，此时需要跳转到
+** lua虚拟机中执行；返回值为1，表示待执行函数是一个C函数，且该函数已经执行完了，
+** 收尾工作也结束了。
 */
 int luaD_precall (lua_State *L, StkId func, int nresults) {
   lua_CFunction f;
@@ -500,18 +622,28 @@ int luaD_precall (lua_State *L, StkId func, int nresults) {
 	  
       /*
       ** 对该函数调用做一些收尾工作，比如将函数返回值挪到适当位置，并退回到上一层函数调用中去。
-      ** (L->top -n)是执行完函数调用后第一个函数调用结果的地址
+      ** (L->top -n)是执行完函数调用后第一个函数调用结果的地址。
       */
       luaD_poscall(L, ci, L->top - n, n);
       return 1;
     }
     case LUA_TLCL: {  /* Lua function: prepare its call */
+      /*
+      ** 程序进入这个分支，说明lua中执行了那个函数调用时一个lua函数，这个时候需要做一些前期准备工作，
+      ** lua函数执行是在虚拟机中的，即luaV_execute()。
+      */
+      
       StkId base;
-      /* 获取函数对应的原型信息 */
+	  
+      /* 获取待执行函数对应的原型信息 */
       Proto *p = clLvalue(func)->p;
+	
       /* 获取实际传递了的函数参数的个数 */
       int n = cast_int(L->top - func) - 1;  /* number of real arguments */
-      /* 获取函数所需要的调用栈的大小，并做检查 */
+	  
+      /* 
+      ** 获取函数内部栈的大小，并做检查。栈中除了存放函数参数之外，还包含了函数内部定义的一些变量。
+      */
       int fsize = p->maxstacksize;  /* frame size */
       checkstackp(L, fsize, func);
 
@@ -527,21 +659,43 @@ int luaD_precall (lua_State *L, StkId func, int nresults) {
         /* base指向了第一个参数 */
         base = func + 1;
       }
+
+      /* 从lua_State的ci链表中获取一个CallInfo节点，用于存放当前函数调用的信息 */
       ci = next_ci(L);  /* now 'enter' new function */
       ci->nresults = nresults;
       ci->func = func;
       ci->u.l.base = base;
+	  
+	  /* 注意到此时整个虚拟栈的栈指针和当前函数调用的栈指针是一样的。 */
       L->top = ci->top = base + fsize;
+
+	  /*
+	  ** 在准备工作中，[base, ci->top)这部分栈单元就是函数内的栈，在函数执行之前，里面就已经存放
+	  ** 好了函数的参数，以及在函数内部定义的本地变量。
+	  */
+	  
       lua_assert(ci->top <= L->stack_last);
       ci->u.l.savedpc = p->code;  /* starting point */
+	  /* 标记是lua函数 */
       ci->callstatus = CIST_LUA;
       if (L->hookmask & LUA_MASKCALL)
         callhook(L, ci);
       return 0;
     }
     default: {  /* not a function */
+      /*
+      ** 有些对象是通过元表来驱动函数调用行为的。这个时候需要通过tryfuncTM()来找到真正的
+      ** 调用函数。在lua中，根据元方法进行的函数调用和普通的函数调用会有一定的区别，通过
+      ** 元方法进行的函数调用，需要将拥有该元方法的对象自身作为元方法的第一个参数，这个时候
+      ** 就需要移动栈的内容，将对象插到第一个参数位置处。真正的调用函数就是元方法"__get"的值。
+	  */
       checkstackp(L, 1, func);  /* ensure space for metamethod */
+	  
       tryfuncTM(L, func);  /* try to get '__call' metamethod */
+	  /*
+	  ** 执行完tryfuncTM()之后，位于函数调用栈中的函数对象和参数都已经设置好了，因此可以通过
+	  ** 调用luaD_precall()来触发函数调用操作了。
+	  */
       return luaD_precall(L, func, nresults);  /* now it must be a function */
     }
   }
@@ -555,6 +709,7 @@ int luaD_precall (lua_State *L, StkId func, int nresults) {
 ** smaller than 9/8 of LUAI_MAXCCALLS, does not report an error (to
 ** allow overflow handling to work)
 */
+/* 处理栈错误 */
 static void stackerror (lua_State *L) {
   if (L->nCcalls == LUAI_MAXCCALLS)
     luaG_runerror(L, "C stack overflow");
@@ -570,15 +725,20 @@ static void stackerror (lua_State *L) {
 ** function position.
 */
 /*
-** 调用一个函数时都会执行这个函数。被调用的函数其地址为func，即func是被调用函数
-** 在栈中的指针。函数的参数也存放在栈中，紧随在函数之后。函数调用返回时，所有的结果
-** 也会存放在栈中，从函数在栈中的原始位置出开始存放。
+** lua中调用一个函数时都会执行这个函数。被调用的函数其地址为func，函数的参数也存放在栈中，
+** 紧随在函数之后。函数调用返回时，所有的结果也会存放在栈中，从函数在栈中的原始位置出开始存放。
 */
 void luaD_call (lua_State *L, StkId func, int nResults) {
 
   /* 如果函数嵌套调用的层数超过了限制，那么就返回错误 */
   if (++L->nCcalls >= LUAI_MAXCCALLS)
     stackerror(L);
+  /* 
+  ** luaD_precall()函数用于为一个函数调用做前期准备，如果是C函数（包括C闭包）的话，
+  ** 就直接在这里执行了。返回值为0，表示待执行函数是一个lua函数，此时需要跳转到
+  ** lua虚拟机中执行；返回值为1，表示待执行函数是一个C函数，且该函数已经执行完了，
+  ** 收尾工作也结束了。
+  */
   if (!luaD_precall(L, func, nResults))  /* is a Lua function? */
     luaV_execute(L);  /* call it */
   L->nCcalls--;
@@ -588,6 +748,7 @@ void luaD_call (lua_State *L, StkId func, int nResults) {
 /*
 ** Similar to 'luaD_call', but does not allow yields during the call
 */
+/* lua函数调用过程中不允许暂停时走的就是这个函数 */
 void luaD_callnoyield (lua_State *L, StkId func, int nResults) {
   L->nny++;
   luaD_call(L, func, nResults);
@@ -801,25 +962,53 @@ LUA_API int lua_yieldk (lua_State *L, int nresults, lua_KContext ctx,
   return 0;  /* return to 'luaD_hook' */
 }
 
-
+/*
+** 如果需要在保护模式下运行栈中的函数调用，那么lua就会调用该函数来处理。old_top表示的是
+** 下面即将在函数func中执行的函数调用在栈中的位置（是相对于整个虚拟栈起始地址的下标，不是地址）（结合
+** lua_pcallk()来看），ef是本次执行受保护代码出错后的错误处理函数。参数u存放的则是在func中
+** 运行的函数调用相关的信息，如该函数调用的返回值个数以及函数指针在栈中的地址。
+** 受保护模式的代码调用流程：luaD_pcall以受保护模式调用func，func则会从栈中取出真正要执行的函数调用。
+** 参数u存放的就是真正要执行的函数调用的信息。
+*/
 int luaD_pcall (lua_State *L, Pfunc func, void *u,
                 ptrdiff_t old_top, ptrdiff_t ef) {
   int status;
+  /*
+  ** 我们知道L->ci保存的是当前正在执行的函数调用对应的CallInfo信息，由于下面要
+  ** 开启一个新的函数调用，因此这里先将当前的函数调用信息保存下来，以便执行完
+  ** 新的函数调用之后进行恢复，继续上次的执行。
+  */
   CallInfo *old_ci = L->ci;
+  
+  /* 同时也保存当前lua线程中一些需要保存的东西 */
   lu_byte old_allowhooks = L->allowhook;
   unsigned short old_nny = L->nny;
   ptrdiff_t old_errfunc = L->errfunc;
+
+  /* 为本次的函数调用设置新的错误处理函数，当前这个值是错误处理函数的栈索引 */
   L->errfunc = ef;
+  
+  /* 以保护模式来执行该函数调用，如果返回值不等于LUA_OK，那么说明在执行代码过程中出现了错误 */
   status = luaD_rawrunprotected(L, func, u);
   if (status != LUA_OK) {  /* an error occurred? */
+    /*
+    ** 恢复在保护模式下运行的函数在栈中的地址，注意这个函数不是func，而是func中触发执行的函数调用。
+    ** func可以参考f_call()
+    */
     StkId oldtop = restorestack(L, old_top);
     luaF_close(L, oldtop);  /* close possible pending closures */
+  
+    /* 将错误码status对应的错误信息设置到出错函数所在的栈单元中。 */
     seterrorobj(L, status, oldtop);
+
+    /* 恢复上一次函数调用的信息。 */
     L->ci = old_ci;
     L->allowhook = old_allowhooks;
     L->nny = old_nny;
     luaD_shrinkstack(L);
   }
+
+  /* 恢复错误处理函数。 */
   L->errfunc = old_errfunc;
   return status;
 }
@@ -846,8 +1035,12 @@ static void checkmode (lua_State *L, const char *mode, const char *x) {
   }
 }
 
-/* f_parser()是对代码分析的入口函数 */
+/* f_parser()是对代码分析的入口函数，分析之后生成的对应的LClosure对象再栈顶部。 */
 static void f_parser (lua_State *L, void *ud) {
+  /*
+  ** cl是一个LClosure类型的指针，其指向的LClosure对象在luaY_parser()或者luaU_undump()
+  ** 中创建，并压入了栈顶部。因此代码分析完之后生成的对应的LClosure对象就在栈顶部了。
+  */
   LClosure *cl;
   struct SParser *p = cast(struct SParser *, ud);
   int c = zgetc(p->z);  /* read first character */
@@ -873,12 +1066,16 @@ int luaD_protectedparser (lua_State *L, ZIO *z, const char *name,
                                         const char *mode) {
   struct SParser p;
   int status;
+  /* 由于下面的f_parser()在执行过程中不可中断，因此L->nny需要加1。 */
   L->nny++;  /* cannot yield during parsing */
   p.z = z; p.name = name; p.mode = mode;
   p.dyd.actvar.arr = NULL; p.dyd.actvar.size = 0;
   p.dyd.gt.arr = NULL; p.dyd.gt.size = 0;
   p.dyd.label.arr = NULL; p.dyd.label.size = 0;
+
+  /* 初始化缓冲区对象 */
   luaZ_initbuffer(L, &p.buff);
+  /* f_parser()是对代码分析的入口函数，分析之后生成的对应的LClosure对象再栈顶部。 */
   status = luaD_pcall(L, f_parser, &p, savestack(L, L->top), L->errfunc);
   luaZ_freebuffer(L, &p.buff);
   luaM_freearray(L, p.dyd.actvar.arr, p.dyd.actvar.size);

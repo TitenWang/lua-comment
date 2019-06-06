@@ -195,14 +195,31 @@ static int msghandler (lua_State *L) {
 ** Interface to 'lua_pcall', which sets appropriate message function
 ** and C-signal handler. Used to run all chunks.
 */
+/*
+** narg是即将被执行函数的参数个数，参数紧随在函数closure对象后面。在调用该函数值之前
+** 需要将参数在栈中设置好。没有参数的话，就不用设置。
+*/
 static int docall (lua_State *L, int narg, int nres) {
   int status;
+
+  /* 获取即将被执行参数在栈中的索引 */
   int base = lua_gettop(L) - narg;  /* function index */
+
+  /* 往栈顶部压入消息处理函数对应的CClosure对象。 */
   lua_pushcfunction(L, msghandler);  /* push message handler */
+  /*
+  ** 将消息处理函数对应的CClosure对象从栈顶往下移至被调用函数对应的closure对象下面，
+  ** 此时，消息处理函数对应的CClosure对象上面是即将被调用的函数的closure对象，往上至
+  ** 栈顶部都是该函数的参数。
+  */
   lua_insert(L, base);  /* put it under function and args */
+  
   globalL = L;  /* to be available to 'laction' */
   signal(SIGINT, laction);  /* set C-signal handler */
+
+  /* 由于上面执行的insert操作，使得索引base对应的栈单元中存放的是消息处理函数对应的CClosure对象 */
   status = lua_pcall(L, narg, nres, base);
+
   signal(SIGINT, SIG_DFL); /* reset C-signal handler */
   lua_remove(L, base);  /* remove message handler from the stack */
   return status;
@@ -285,7 +302,7 @@ static int dofile (lua_State *L, const char *name) {
   return dochunk(L, luaL_loadfile(L, name));
 }
 
-
+/* 字符串s中包含了可执行的lua代码。例如以-e加一个包含了lua代码的字符串来启动lua，就会走这个流程。 */
 static int dostring (lua_State *L, const char *s, const char *name) {
   return dochunk(L, luaL_loadbuffer(L, s, strlen(s), name));
 }
@@ -295,10 +312,19 @@ static int dostring (lua_State *L, const char *s, const char *name) {
 ** Calls 'require(name)' and stores the result in a global variable
 ** with the given name.
 */
+/*
+** dolibrary()函数的功能就是执行reqire 'name'。然后将require函数的返回值（比如库级别的table）以
+** name为键值加入到_G表中。
+*/
 static int dolibrary (lua_State *L, const char *name) {
   int status;
+  /* 往栈顶部压入require对应的CClosure对象 */
   lua_getglobal(L, "require");
+
+  /* 将库名name压入栈顶部 */
   lua_pushstring(L, name);
+
+  /* 执行require函数调用，结果会在require函数内压入栈顶部。require对应的函数是ll_require() */
   status = docall(L, 1, 1);  /* call 'require(name)' */
   if (status == LUA_OK)
     lua_setglobal(L, name);  /* global[name] = require return */
@@ -482,9 +508,20 @@ static int handle_script (lua_State *L, char **argv) {
   const char *fname = argv[0];
   if (strcmp(fname, "-") == 0 && strcmp(argv[-1], "--") != 0)
     fname = NULL;  /* stdin */
+
+  /* 
+  ** 在执行luaL_loadfile()之前，虚拟栈中目前的元素有pmain对应的CClosure对象，argc和
+  ** argv这三个元素。
+  */
   
   /* 加载lua代码文件，但未执行，因为lua代码文件可能需要命令行参数。 */
   status = luaL_loadfile(L, fname);
+
+  /*
+  ** 程序执行到这里时，位于栈顶部的是fname代码文件解析后生成的LClosure对象。注意，
+  ** 一个代码文件，字符串中包含了lua代码，交互模式中一行的代码最终都会被解析成一个
+  ** LClosure对象，解析完之后会被压入栈顶部。
+  */
 
   /*
   ** 如果加载lua代码文件成功，则尝试从arg表中将lua代码文件的参数压入栈中，供执行文件的时候使用。
@@ -685,7 +722,10 @@ static int pmain (lua_State *L) {
   if (args & has_v)  /* option '-v'? */
     print_version();
 
-  /* 检查是否有"-E"，有的话，向全局注册表中写入键值对{"LUA_NOENV": 1}，表示忽略env. vars. */
+  /*
+  ** 检查是否有"-E"，有的话，向全局注册表中写入键值对{"LUA_NOENV": 1}，表示忽略env. vars.。
+  ** 添加完之后，将此时位于栈顶部的bool值1弹出栈顶部。
+  */
   if (args & has_E) {  /* option '-E'? */
     lua_pushboolean(L, 1);  /* signal for libraries to ignore env. vars. */
     lua_setfield(L, LUA_REGISTRYINDEX, "LUA_NOENV");
@@ -723,6 +763,10 @@ static int pmain (lua_State *L) {
     ** 如果命令行参数中没有指定lua代码文件，也没有指定-e和-v选项，则以交互模式运行lua解释器。
     ** 在交互模式中，用户输入一串代码，按回车，解释器就执行这串代码，否则等待用户输入。
     */
+    /* 
+    ** 在执行doREPL()或者dofile之前，虚拟栈中目前的元素有pmain对应的CClosure对象，argc和
+    ** argv这三个元素。
+    */
     if (lua_stdin_is_tty()) {  /* running in interactive mode? */
       print_version();
       doREPL(L);  /* do read-eval-print loop */
@@ -751,10 +795,15 @@ int main (int argc, char **argv) {
   ** 2、将argc、argv压入虚拟栈。
   ** 3、执行函数调用。
   ** 4、从虚拟栈中获取函数调用结果。
+  ** 从这里可以看出，虚拟栈中的第一个元素是pmain对应的CClosure对象，且在luaL_newstate()中
+  ** 调用的stack_init()函数看出，主线程的base_ci存放的就是pmain()函数对应的调用信息，其中
+  ** 的func指向的就是pmain()对应的CClosure对象。
   */
   lua_pushcfunction(L, &pmain);  /* to call 'pmain' in protected mode */
   lua_pushinteger(L, argc);  /* 1st argument */
   lua_pushlightuserdata(L, argv); /* 2nd argument */
+
+  /* 会用保护模式来执行pmain()函数 */
   status = lua_pcall(L, 2, 1, 0);  /* do the call */
   result = lua_toboolean(L, -1);  /* get result */
   

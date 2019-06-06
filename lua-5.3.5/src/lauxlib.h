@@ -84,7 +84,10 @@ LUALIB_API void (luaL_unref) (lua_State *L, int t, int ref);
 LUALIB_API int (luaL_loadfilex) (lua_State *L, const char *filename,
                                                const char *mode);
 
-/* 加载f指定的lua代码文件，做一些词法分析、语法分析等操作，进而生成虚拟机执行的字节码 */
+/*
+** 加载f指定的lua代码文件，做一些词法分析、语法分析等操作，进而生成虚拟机执行的字节码。
+** 执行完该函数之后，保存了最终分析结果的LClosure对象已经在栈顶部了。
+*/
 #define luaL_loadfile(L,f)	luaL_loadfilex(L,f,NULL)
 
 LUALIB_API int (luaL_loadbufferx) (lua_State *L, const char *buff, size_t sz,

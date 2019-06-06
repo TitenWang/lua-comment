@@ -617,14 +617,20 @@ static void findloader (lua_State *L, const char *name) {
 static int ll_require (lua_State *L) {
   /* 
   ** 获取处于目前函数调用栈的栈索引值为1（对应L->ci->func + 1）的栈元素的内容，以字符串显示结果，
-  ** 即紧跟在require关键字后面的库名。如require "math"，name这里的name就是"math"。
+  ** 即紧跟在require关键字后面的库名，这个是require函数的参数。如require "math"，name这里的name
+  ** 就是"math"。
   */
   const char *name = luaL_checkstring(L, 1);
   
-  /* 重新设置栈指针L->top，因为require后面的库名我们已经获取到了，那么就可以将其弹出栈顶部了 */
+  /* 重新设置栈指针L->top，设置完成之后，L->top = L->ci->func + 1 + 1，即存放库名字的栈单元的
+  ** 下一个栈单元。
+  */
   lua_settop(L, 1);  /* LOADED table will be at index 2 */
   
-  /* 从栈索引值（伪索引）为LUA_REGISTRYINDEX的注册表中获取键值为"_LOADED"的table，并压入栈顶部 */
+  /*
+  ** 从栈索引值（伪索引）为LUA_REGISTRYINDEX的注册表中获取键值为"_LOADED"的table，并压入栈顶部，
+  ** 此时"_LOADED" table在该函数调用栈中的索引值为2。索引值为1的库名字。
+  */
   lua_getfield(L, LUA_REGISTRYINDEX, LUA_LOADED_TABLE);
   
   /* 
@@ -644,7 +650,7 @@ static int ll_require (lua_State *L) {
 
   /* 
   ** 找到库名name对应的库加载函数，此时库加载函数位于栈次顶部单元，而栈顶部单元是搜索库加载函数的
-  ** 搜索函数的第二个返回值。
+  ** 搜索函数的第二个返回值，第一个返回值就是库加载函数。
   */
   findloader(L, name);
 
@@ -669,6 +675,10 @@ static int ll_require (lua_State *L) {
   /*
   ** 如果库加载函数返回的是nil，那么就以name为键值，将bool值true添加到"_LOADED" table中，
   ** 表示该库已经加载过了。
+  ** 尝试以库名name从"_LOADED" table中获取对应的值对象（正常情况下是库name的加载函数的执行结果），
+  ** 将获取到的值对象压入栈顶部。判断位于栈顶的值对象是不是nil，是nil的话，那么就以name为键值，
+  ** 将bool值true添加到"_LOADED" table中，表示该库已经加载过了。如果不是nil，那么此时位于栈顶部的
+  ** 就是库name加载函数的执行结果（一般来说是一个table）。
   */
   if (lua_getfield(L, 2, name) == LUA_TNIL) {   /* module set no value? */
     lua_pushboolean(L, 1);  /* use true as result */
@@ -676,7 +686,12 @@ static int ll_require (lua_State *L) {
     lua_setfield(L, 2, name);  /* LOADED[name] = true */
   }
 
-  /* 程序执行到这里，位于栈顶部的是"_LOADED" table */
+  /*
+  ** 程序执行到这里，位于栈顶部的是库name加载函数的执行结果（一般来说是该库对应的table），
+  ** 如果将require的结果赋值给一个本地变量，那么就是将这个table赋值给了这个变量。例如：
+  ** local math = require "math"，那么就是将math库对应的table赋值给了math变量。这对于上面那个
+  ** 库已经加载的情况也是一样的。
+  */
   return 1;
 }
 

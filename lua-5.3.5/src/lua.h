@@ -120,6 +120,7 @@ typedef LUA_KCONTEXT lua_KContext;
 /*
 ** Type for C functions registered with Lua
 */
+/* 注册到lua中的C函数的原型定义。 */
 typedef int (*lua_CFunction) (lua_State *L);
 
 /*
@@ -289,10 +290,17 @@ LUA_API void  (lua_setuservalue) (lua_State *L, int idx);
 */
 LUA_API void  (lua_callk) (lua_State *L, int nargs, int nresults,
                            lua_KContext ctx, lua_KFunction k);
+
+/* 
+** lua中要调用某个函数时，就会用这个函数来执行具体的函数调用。n是参数个数，r是返回值个数。
+** 函数的返回值在栈顶部（r个栈单元）。
+*/
 #define lua_call(L,n,r)		lua_callk(L, (n), (r), 0, NULL)
 
 LUA_API int   (lua_pcallk) (lua_State *L, int nargs, int nresults, int errfunc,
                             lua_KContext ctx, lua_KFunction k);
+
+/* 用保护模式来执行某个函数调用，其中待执行的函数指针可以由L->top - (n+1)得到 */
 #define lua_pcall(L,n,r,f)	lua_pcallk(L, (n), (r), (f), 0, NULL)
 
 LUA_API int   (lua_load) (lua_State *L, lua_Reader reader, void *dt,

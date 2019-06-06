@@ -885,7 +885,7 @@ LUALIB_API int luaL_loadfilex (lua_State *L, const char *filename,
   }
   else {
 
-    /* 将lua代码文件名压入调用栈 */
+    /* 将lua代码文件名压入调用栈顶部，作为chunk的名字 */
     lua_pushfstring(L, "@%s", filename);
     lf.f = fopen(filename, "r");
     if (lf.f == NULL) return errfile(L, "open", fnameindex);
@@ -908,6 +908,8 @@ LUALIB_API int luaL_loadfilex (lua_State *L, const char *filename,
   /* 开始读文件并保存文件内容，然后进行词法和语法分析，进而生成虚拟机执行的字节码 */
   if (c != EOF)
     lf.buff[lf.n++] = c;  /* 'c' is the first character of the stream */
+
+  /* 执行完下面这条语句之后，保存了分析结果的LClosure对象已经在栈顶部了。 */
   status = lua_load(L, getF, &lf, lua_tostring(L, -1), mode);
 
   /* 获取文件操作的结果，并判断读文件是否出错 */

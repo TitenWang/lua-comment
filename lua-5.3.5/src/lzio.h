@@ -19,10 +19,15 @@ typedef struct Zio ZIO;
 
 #define zgetc(z)  (((z)->n--)>0 ?  cast_uchar(*(z)->p++) : luaZ_fill(z))
 
-
+/* 缓冲区对象 */
 typedef struct Mbuffer {
+  /* 缓冲区地址 */
   char *buffer;
+  
+  /* 缓冲区已有内容的长度 */
   size_t n;
+
+  /* 缓冲区总长度 */
   size_t buffsize;
 } Mbuffer;
 
@@ -52,9 +57,13 @@ LUAI_FUNC size_t luaZ_read (ZIO* z, void *b, size_t n);	/* read next n bytes */
 
 /* --------- Private Part ------------------ */
 
+/* 操作缓冲区的对象 */
 struct Zio {
+  /* 缓冲区中尚未读取的内容长度 */
   size_t n;			/* bytes still unread */
+  /* 缓冲区中尚未读取的内容的首地址 */
   const char *p;		/* current position in buffer */
+  /* 读缓冲区的函数 */
   lua_Reader reader;		/* reader function */
   void *data;			/* additional data */
   lua_State *L;			/* Lua state (for reader) */

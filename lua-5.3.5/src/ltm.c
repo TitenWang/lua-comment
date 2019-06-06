@@ -60,6 +60,7 @@ void luaT_init (lua_State *L) {
 ** function to be used with macro "fasttm": optimized for absence of
 ** tag methods
 */
+/* 从元表events中获取键值ename对应的TValue对象（正常情况下是元方法） */
 const TValue *luaT_gettm (Table *events, TMS event, TString *ename) {
   const TValue *tm = luaH_getshortstr(events, ename);
   lua_assert(event <= TM_EQ);
@@ -71,8 +72,10 @@ const TValue *luaT_gettm (Table *events, TMS event, TString *ename) {
 }
 
 
+/* 从TValue对象的元表中获取事件event对应的的元方法 */
 const TValue *luaT_gettmbyobj (lua_State *L, const TValue *o, TMS event) {
   Table *mt;
+  /* table和userdata类型的每个对象都有自己的元表， 其他类型的所有对象共享一个元表。 */
   switch (ttnov(o)) {
     case LUA_TTABLE:
       mt = hvalue(o)->metatable;
@@ -91,6 +94,7 @@ const TValue *luaT_gettmbyobj (lua_State *L, const TValue *o, TMS event) {
 ** Return the name of the type of an object. For tables and userdata
 ** with metatable, use their '__name' metafield, if present.
 */
+/* 获取TValue对象中封装的数据对应的数据类型的名字 */
 const char *luaT_objtypename (lua_State *L, const TValue *o) {
   Table *mt;
   if ((ttistable(o) && (mt = hvalue(o)->metatable) != NULL) ||

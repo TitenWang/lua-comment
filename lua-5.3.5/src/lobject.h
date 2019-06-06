@@ -496,6 +496,7 @@ typedef union UUdata {
 /*
 ** Description of an upvalue for function prototypes
 */
+/* lua函数自由变量描述信息 */
 typedef struct Upvaldesc {
   TString *name;  /* upvalue name (for debug information) */
   lu_byte instack;  /* whether it is in stack (register) */
@@ -507,6 +508,7 @@ typedef struct Upvaldesc {
 ** Description of a local variable for function prototypes
 ** (used for debug information)
 */
+/* lua函数中定义的本地变量 */
 typedef struct LocVar {
   TString *varname;
   int startpc;  /* first point where variable is active */
@@ -517,7 +519,10 @@ typedef struct LocVar {
 /*
 ** Function Prototypes
 */
-/* Proto结构体用于存放函数的原型信息 */
+/*
+** Proto结构体用于存放函数的原型信息
+** 注意，整个lua代码文件解析完成之后，也是生成这么一个Proto的对象，即整个代码文件也当做是一个函数。
+*/
 typedef struct Proto {
   CommonHeader;
 
@@ -525,10 +530,10 @@ typedef struct Proto {
   lu_byte numparams;  /* number of fixed parameters */
   lu_byte is_vararg;  /* 该函数是不是可变参数的 */
 
-  /* 该函数所需要的函数调用栈的大小 */
+  /* 该函数所需要的函数栈的大小，函数的栈中会存放函数参数，函数内部定义的本地变量等。 */
   lu_byte maxstacksize;  /* number of registers needed by this function */
 
-  /* Upvaldesc *upvalues数组的大小 */
+  /* Upvaldesc *upvalues数组的大小，即函数对应的自由变量的个数。 */
   int sizeupvalues;  /* size of 'upvalues' */
 
   /* TValue *k数组的大小 */
@@ -549,14 +554,14 @@ typedef struct Proto {
   /* 存放该函数使用的所有常量 */
   TValue *k;  /* constants used by the function */
 
-  /* code指向的是该函数对应的字节码存放的地址 */
+  /* code指向的是该函数对应的字节码存放的地址，该地址指向的内存不在虚拟栈中，而是动态申请的 */
   Instruction *code;  /* opcodes */
 
   /* p指向的是在这个函数内定义的其他函数所对应的Proto结构体指针数组 */
   struct Proto **p;  /* functions defined inside the function */
   int *lineinfo;  /* map from opcodes to source lines (debug information) */
 
-  /* locvars存放了该函数使用到的本地变量（即在函数内部定义的局部变量）信息 */
+  /* locvars存放了该函数使用到的本地变量（即在函数内部定义的局部变量）信息（仅用于debug） */
   LocVar *locvars;  /* information about local variables (debug information) */
 
   /* upvalues指向存放了该函数使用到的所有自由变量的内存地址 */

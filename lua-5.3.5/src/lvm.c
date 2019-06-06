@@ -724,7 +724,12 @@ void luaV_finishOp (lua_State *L) {
 ** some macros for common tasks in 'luaV_execute'
 */
 
-
+/*
+** RA(i)表示指令i中参数ra的栈地址，RB(i)表示指令i中参数rb的栈地址。
+** GETARG_A(i)用于取出指令i中A部分的值，这部分的值是相对于函数内部的栈的基址（函数Closure对象的
+** 下一个栈单元）的偏移量，函数内部的栈的范围[ci->u.l.base, ci->top)，用于存放函数参数及函数内
+** 定义的本地变量。
+*/
 #define RA(i)	(base+GETARG_A(i))
 #define RB(i)	check_exp(getBMode(GET_OPCODE(i)) == OpArgR, base+GETARG_B(i))
 #define RC(i)	check_exp(getCMode(GET_OPCODE(i)) == OpArgR, base+GETARG_C(i))
@@ -753,6 +758,7 @@ void luaV_finishOp (lua_State *L) {
 
 
 /* fetch an instruction and prepare its execution */
+/* 从当前函数调用栈中取出一条指令，并做一些准备工作 */
 #define vmfetch()	{ \
   i = *(ci->u.l.savedpc++); \
   if (L->hookmask & (LUA_MASKLINE | LUA_MASKCOUNT)) \
@@ -782,35 +788,48 @@ void luaV_finishOp (lua_State *L) {
     Protect(luaV_finishset(L,t,k,v,slot)); }
 
 
-/* 指令执行的入口函数 */
+/* 指令执行的入口函数，即Lua虚拟机实现 */
 void luaV_execute (lua_State *L) {
+
+  /* L->ci指向的始终是函数调用链中当前正在执行的函数调用对应的CallInfo节点 */
   CallInfo *ci = L->ci;
 
   /*
-  ** cl保存当前所在的函数环境，在lua中，一个即使没有任何函数的lua文件
-  ** 也对应一个函数环境
+  ** cl保存当前所在的函数环境，即当前函数对应的Closure对象。
+  ** 在lua中，一个即使没有任何函数的lua文件也对应一个Closure对象。
   */
   LClosure *cl;
 
   /* 当前函数环境的常量数组 */
   TValue *k;
 
-  /* 当前函数环境的栈基址 */
+  /* 当前执行函数的栈基址 */
   StkId base;
   ci->callstatus |= CIST_FRESH;  /* fresh invocation of 'luaV_execute" */
  newframe:  /* reentry point when frame changes (call/return) */
   lua_assert(ci == L->ci);
+
+  /* 获取当前调用函数对应的Closure对象 */
   cl = clLvalue(ci->func);  /* local reference to function's closure */
+
+  /* 获取当前调用函数的常量表 */
   k = cl->p->k;  /* local reference to function's constant table */
+
+  /*
+  ** 获取当前函数第一个参数的地址，从这个地址往后倒ci->top的前一个栈单元就是该函数的独有的栈信息。
+  ** 包含参数、内部定义的本地变量的。
+  */
   base = ci->u.l.base;  /* local copy of function's base */
   /* main loop of interpreter */
   for (;;) {
     Instruction i;
     StkId ra;
+    /* 从ci->u.l.savedpc中取出一条指令存放到i中 */
     vmfetch();
     /* 根据指令的操作码做相应的操作 */
     vmdispatch (GET_OPCODE(i)) {
       vmcase(OP_MOVE) {
+        /* move指令，将rb中的值拷贝到ra中 */
         setobjs2s(L, ra, RB(i));
         vmbreak;
       }

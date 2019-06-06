@@ -204,7 +204,7 @@ LUA_API int lua_gettop (lua_State *L) {
 ** idx < 0时，L->top= L->top + 1 + idx 
 */
 LUA_API void lua_settop (lua_State *L, int idx) {
-  /* 当前函数调用栈的基址，也就是函数指针的地址 */
+  /* 当前函数调用栈的基址，也就是存放了函数指针的地址 */
   StkId func = L->ci->func;
   lua_lock(L);
   if (idx >= 0) {
@@ -1152,7 +1152,7 @@ LUA_API void lua_setuservalue (lua_State *L, int idx) {
      api_check(L, (nr) == LUA_MULTRET || (L->ci->top - L->top >= (nr) - (na)), \
 	"results from function overflow current stack size")
 
-
+/* lua中要调用某个函数时，就会用这个函数来执行具体的函数调用。n是参数个数，r是返回值个数。 */
 LUA_API void lua_callk (lua_State *L, int nargs, int nresults,
                         lua_KContext ctx, lua_KFunction k) {
   StkId func;
@@ -1162,13 +1162,19 @@ LUA_API void lua_callk (lua_State *L, int nargs, int nresults,
   api_checknelems(L, nargs+1);
   api_check(L, L->status == LUA_OK, "cannot do calls on non-normal thread");
   checkresults(L, nargs, nresults);
+  /* 获取待调用的Closure函数对象 */
   func = L->top - (nargs+1);
   if (k != NULL && L->nny == 0) {  /* need to prepare continuation? */
+    /* 
+    ** 程序执行到这里表明，在执行函数调用的过程中，可能会被中断，被中断后也需要恢复，
+    ** 因此要保存上下文环境及断点
+    */
     L->ci->u.c.k = k;  /* save continuation */
     L->ci->u.c.ctx = ctx;  /* save context */
     luaD_call(L, func, nresults);  /* do the call */
   }
   else  /* no continuation or no yieldable */
+    /* 程序执行到这里，说明即将执行的函数调用不会被中断，而是一次性执行完毕 */
     luaD_callnoyield(L, func, nresults);  /* just do the call */
   adjustresults(L, nresults);
   lua_unlock(L);
@@ -1179,19 +1185,22 @@ LUA_API void lua_callk (lua_State *L, int nargs, int nresults,
 /*
 ** Execute a protected call.
 */
+/* 在保护模式下执行函数调用时，CallS保存的真正要执行的函数调用在栈中的地址及其返回值个数 */
 struct CallS {  /* data to 'f_call' */
   StkId func;
   int nresults;
 };
 
-
+/* 用来在受保护模式下触发栈中的真正的需要受保护函数调用 */
 static void f_call (lua_State *L, void *ud) {
   struct CallS *c = cast(struct CallS *, ud);
   luaD_callnoyield(L, c->func, c->nresults);
 }
 
 
-
+/*
+** 以保护模式来运行栈中的函数调用，其中待执行的函数指针可以由L->top - (nargs+1)得到
+*/
 LUA_API int lua_pcallk (lua_State *L, int nargs, int nresults, int errfunc,
                         lua_KContext ctx, lua_KFunction k) {
   struct CallS c;
@@ -1203,6 +1212,8 @@ LUA_API int lua_pcallk (lua_State *L, int nargs, int nresults, int errfunc,
   api_checknelems(L, nargs+1);
   api_check(L, L->status == LUA_OK, "cannot do calls on non-normal thread");
   checkresults(L, nargs, nresults);
+
+  /* 获取错误处理函数func的索引，相对于整个虚拟栈的起始地址 */
   if (errfunc == 0)
     func = 0;
   else {
@@ -1212,15 +1223,20 @@ LUA_API int lua_pcallk (lua_State *L, int nargs, int nresults, int errfunc,
   }
 
   /*
-  ** 获取被调用函数的指针，这里的nargs是由函数参数传入的，在luaL_dofile中调用
-  ** lua_pcall时，这里传入的参数是0，换句话说，这里得到的函数对象指针就是前面
-  ** luaY_parser函数中这两句代码放入Lua栈的Closure指针：
+  ** 获取被调用函数的closure对象，这里的nargs是由函数参数传入的。例如在在luaL_dofile中调用
+  ** lua_pcall时，这里传入的参数是0，换句话说，这里得到的函数closure对象就是前面
+  ** luaY_parser函数中这两句代码放入Lua栈的Closure对象：
   **   setclLvalue(L, L->top, cl);
   **   luaD_inctop(L);
   */
   c.func = L->top - (nargs+1);  /* function to be called */
   if (k == NULL || L->nny > 0) {  /* no continuation or no yieldable? */
     c.nresults = nresults;  /* do a 'conventional' protected call */
+    /*
+    ** luaD_pcall()中会以保护模式来运行f_call()函数，而f_call()中又会触发调用上面的c.func
+    ** f_call()用来在受保护模式下触发栈中的真正的需要受保护函数调用，这里就是c.func。
+    ** c.func才是真正要在保护模式中运行的函数调用。
+    */
     status = luaD_pcall(L, f_call, &c, savestack(L, c.func), func);
   }
   else {  /* prepare continuation (call is already protected by 'resume') */
@@ -1243,13 +1259,18 @@ LUA_API int lua_pcallk (lua_State *L, int nargs, int nresults, int errfunc,
   return status;
 }
 
-
+/* 
+** 加载lua代码，并进行词法分析和语法分析，分析完成之后，保存了分析结果的LClosure对象
+** 已经存放在了栈顶部。
+*/
 LUA_API int lua_load (lua_State *L, lua_Reader reader, void *data,
                       const char *chunkname, const char *mode) {
   ZIO z;
   int status;
   lua_lock(L);
   if (!chunkname) chunkname = "?";
+  
+  /* 初始化操作缓冲区的对象 */
   luaZ_init(L, &z, reader, data);
   status = luaD_protectedparser(L, &z, chunkname, mode);
   if (status == LUA_OK) {  /* no errors? */

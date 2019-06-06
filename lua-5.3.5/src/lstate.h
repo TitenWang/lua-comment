@@ -109,26 +109,40 @@ typedef struct stringtable {
 ** 更深的无用节点。
 */
 typedef struct CallInfo {
-  /* func指向函数在栈中的位置 */
+  /* func指向的是该函数调用对应的Closure对象 */
   StkId func;  /* function index in the stack */
 
   /*
   ** top指向函数的最后一个栈单元在栈中的位置，意思就是说func和top之间的
-  ** 这部分内容就是函数存放在栈中的全部内容，包括函数指针，参数值、函数调用结果等。
+  ** 这部分内容就是函数内部栈的全部内容，包括函数指针、参数值、函数内部定义的本地变量、函数调用结果等。
   */
   StkId	top;  /* top for this function */
   /* 用于存放函数调用链。函数调用链用一个双向链表来链接起来。 */
   struct CallInfo *previous, *next;  /* dynamic call link */
   union {
     struct {  /* only for Lua functions */
-      /* base存放的是函数参数在栈中基地址，也就是第一个参数的地址，多个参数连续存放。 */
+      /* 
+      ** base存放的是函数参数在栈中基地址，也就是第一个参数的地址，多个参数连续存放。
+      ** 还有函数内部定义的本地变量。[base, top)就是该函数调用内部的栈信息。下面的指令
+      ** 没有放在栈中，而是单独申请的内存。
+      */
       StkId base;  /* base for this function */
 
-      /* savedpc指向该函数调用相关指令的起始地址 */
+      /* 
+      ** savedpc保存的是该函数调用目前已经执行到的地方，即对应于
+      ** 当前函数调用的下一条将要执行的指令的地址。如果在本函数（或闭包）中再次调用别的
+      ** 函数(或闭包), 那么该值就是本函数的运行断点，等被调用函数返回后，就从这里继续执行。
+      ** 存放函数对应指令的地址。存放函数对应的指令的内存是不在虚拟栈中的。
+      */
       const Instruction *savedpc;
     } l;
     struct {  /* only for C functions */
       lua_KFunction k;  /* continuation in case of yields */
+      /* 
+      ** ptrdiff_t是C/C++标准库中定义的一个与机器相关的数据类型。ptrdiff_t类型变量
+      ** 通常用来保存两个指针减法操作的结果。
+      ** old_errfunc用来保存被中断函数对应的错误处理函数。
+      */
       ptrdiff_t old_errfunc;
       lua_KContext ctx;  /* context info. in case of yields */
     } c;
@@ -255,6 +269,7 @@ struct lua_State {
   global_State *l_G;  /* l_G指向的是由所有thread共享的全局虚拟机信息 */
 
   /*
+  ** L->ci指向的始终是函数调用链中当前正在执行的函数调用对应的CallInfo节点。
   ** 链表ci存放的是当前函数的调用链信息，调用链中的CallInfo由一个双向链表串起来。
   ** 通过遍历这个ci链表，就可以获取到完成的调用链信息。在这个双向链表中，ci只是
   ** 用于遍历这个双向链表，ci是一个指针，是没有分配具体的CallInfo对象所需内存的，
@@ -280,6 +295,8 @@ struct lua_State {
   ** 始终是函数调用链中当前正在执行的函数调用对应的CallInfo节点。
   */
   CallInfo *ci;  /* call info for current function */
+
+  /* 保存上一层函数调用的执行断点，即对应于上一层函数调用的指令中，下一条将要执行的指令的地址。 */
   const Instruction *oldpc;  /* last pc traced */
 
   /* stack_last存放整个栈的内存上限 */
@@ -290,8 +307,16 @@ struct lua_State {
   UpVal *openupval;  /* list of open upvalues in this stack */
   GCObject *gclist;
   struct lua_State *twups;  /* list of threads with open upvalues */
+
+  /*
+  ** 每个线程L中都会保存当前longjump的返回点errorJmp，这个成员的类型是struct lua_longjmp *，
+  ** 这个结构体是一个链表，节点里面包含了setjump()所需要的jmp buffer成员。每运行一段受保护的
+  ** 代码，都会生成一个新的返回点，并插入到这个链表中。受保护的代码通常容易引起错误，为了在
+  ** 引起错误时能够返回到运行这段代码之前，因此需要设置一个返回点，这样才能跳转回来。
+  */
   struct lua_longjmp *errorJmp;  /* current error recover point */
 
+  /* 该线程执行的第一个函数调用信息 */
   CallInfo base_ci;  /* CallInfo for first level (C calling Lua) */
   volatile lua_Hook hook;
   ptrdiff_t errfunc;  /* current error handling function (stack index) */
@@ -300,6 +325,8 @@ struct lua_State {
   int stacksize;
   int basehookcount;
   int hookcount;
+
+  /* 线程中不可中断的函数调用数 */
   unsigned short nny;  /* number of non-yieldable calls in stack */
 
   /* 嵌套调用的函数的层数 */

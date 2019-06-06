@@ -1627,20 +1627,23 @@ static void mainfunc (LexState *ls, FuncState *fs) {
   close_func(ls);
 }
 
-
+/*
+** 一个代码文件，或者一个lua代码块，解析之后对外的呈现方式都算是一个LClosre对象，
+** 即把代码文件内容或者一个lua代码块都当做是一个lua函数。
+*/
 LClosure *luaY_parser (lua_State *L, ZIO *z, Mbuffer *buff,
                        Dyndata *dyd, const char *name, int firstchar) {
   LexState lexstate;
   FuncState funcstate;
 
-  /* 创建一个closure，在lua中其实所有的函数都是闭包 */
+  /* 创建一个LClosure对象，用于保存本次解析的最终结果 */
   LClosure *cl = luaF_newLclosure(L, 1);  /* create main closure */
 
-  /* 将closure存入调用栈，防止被回收，并修改调用栈栈顶指针 */
+  /* 将closure压入栈顶部，防止被回收，并修改栈指针 */
   setclLvalue(L, L->top, cl);  /* anchor it (to avoid being collected) */
   luaD_inctop(L);
 
-  /* 创建用于存放扫描器保存扫描结果的lua表，并将表的地址压栈 */
+  /* 创建用于存放扫描器的扫描结果的lua表，并将表的地址压入栈顶部。 */
   lexstate.h = luaH_new(L);  /* create table for scanner */
   sethvalue(L, L->top, lexstate.h);  /* anchor it */
   luaD_inctop(L);
@@ -1657,8 +1660,15 @@ LClosure *luaY_parser (lua_State *L, ZIO *z, Mbuffer *buff,
   lua_assert(!funcstate.prev && funcstate.nups == 1 && !lexstate.fs);
   /* all scopes should be correctly finished */
   lua_assert(dyd->actvar.n == 0 && dyd->gt.n == 0 && dyd->label.n == 0);
+
+  /* 
+  ** 因为扫描及解析的最终结果已经存放到LClosure对象中了，因此这个table的使命
+  ** 已经完成了，将其弹出栈顶。
+  */
   L->top--;  /* remove scanner's table */
-  /* 返回保存了代码解析结果的closure */
+
+  
+  /* 返回保存了代码解析结果的closure，此时位于栈顶部的也是这个cl对象 */
   return cl;  /* closure is on the stack, too */
 }
 

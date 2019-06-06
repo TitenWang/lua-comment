@@ -51,6 +51,12 @@
 /*
 ** thread state + extra space
 */
+/* 
+** Lua中真正的线程对应的其实应该算是LX，而不是lua_State，但是对外而言Lua中的线程对应的
+** 就是lua_State。为什么不直接将extra_数组放在lua_State里面呢？这样可以防止向外部暴露
+** 太多的信息。LUA_EXTRASPACE宏的大小就是指针的大小，对应所在机器的地址寄存器的大小（单位是字节）。
+** extra_数组可以用来存放一些附加信息。
+*/
 typedef struct LX {
   lu_byte extra_[LUA_EXTRASPACE];
   lua_State l;
@@ -61,6 +67,10 @@ typedef struct LX {
 ** Main thread combines a thread state and the global state
 */
 /* 主线程信息，包含了一个主线程自身的lua_State状态信息，还有一个全部thread共享的状态信息 */
+/* 
+** 创建主线程是申请的对象时LG类型的，创建其他线程时申请的对象时LX，LG比LX就多了个global_State，
+** 而global_State是由所有thread共享的，只是是由主线程创建的而已。
+*/
 typedef struct LG {
   LX l;
   global_State g;
@@ -79,6 +89,7 @@ typedef struct LG {
   { size_t t = cast(size_t, e); \
     memcpy(b + p, &t, sizeof(t)); p += sizeof(t); }
 
+/* 生成hash操作所需要的随机种子 */
 static unsigned int makeseed (lua_State *L) {
   char buff[4 * sizeof(size_t)];
   unsigned int h = luai_makeseed();
@@ -186,12 +197,17 @@ static void stack_init (lua_State *L1, lua_State *L) {
   L1->stack_last = L1->stack + L1->stacksize - EXTRA_STACK;
   
   /* initialize first ci */
-  /* 初始化第一个函数调用对应的CallInfo信息 */
+  /* 初始化该线程中第一个函数调用对应的CallInfo信息 */
   ci = &L1->base_ci;
   ci->next = ci->previous = NULL;
   ci->callstatus = 0;
   
-  /* 第一个函数调用信息中的函数指针指向虚拟栈的内存起始单元。 */
+  /*
+  ** 第一个函数调用信息中的函数指针指向虚拟栈的内存起始单元。从main()函数中可以看到，
+  ** 对于主线程而言，pmain()函数会被第一个压入栈中，那么主线程中的base_ci中指向的func
+  ** 就是pmain()对应的CClosure对象，base_ci也就是pmain()的调用栈信息。对于其他线程而言，
+  ** 则需要依据具体情况而定，看看这些线程中最先执行哪个函数。
+  */
   ci->func = L1->top;
   
   /* 往第一个函数调用信息中的函数指针对应的单元中写入nil对象 */
@@ -200,7 +216,7 @@ static void stack_init (lua_State *L1, lua_State *L) {
   /* 默认栈至少LUA_MINSTACK个空闲的槽 */
   ci->top = L1->top + LUA_MINSTACK;
 
-  /* 写入函数调用链的头部，即CallInfo数组的第一个元素 */
+  /* 写入函数调用链的头部，即CallInfo链表的第一个元素是lua_State中的base_ci */
   L1->ci = ci;
 }
 
@@ -233,7 +249,7 @@ static void init_registry (lua_State *L, global_State *g) {
   */
   luaH_resize(L, registry, LUA_RIDX_LAST, 0);
   /* registry[LUA_RIDX_MAINTHREAD] = L */
-  setthvalue(L, &temp, L);  /* temp = L */LUA_RIDX_MAINTHREAD
+  setthvalue(L, &temp, L);  /* temp = L */
   luaH_setint(L, registry, LUA_RIDX_MAINTHREAD, &temp);
   /* registry[LUA_RIDX_GLOBALS] = table of globals */
   sethvalue(L, &temp, luaH_new(L));  /* temp = new table (global table) */
@@ -312,30 +328,55 @@ static void close_state (lua_State *L) {
 }
 
 
+/* 创建一个新的thread，并将其压入栈顶部 */
 LUA_API lua_State *lua_newthread (lua_State *L) {
+  /* 获取由所有thread共享的全局状态信息 */
   global_State *g = G(L);
   lua_State *L1;
   lua_lock(L);
   luaC_checkGC(L);
+  
   /* create new thread */
+  /* 创建一个新的thread对象，这里对应的是LX类型的对象，Lua中真正的线程对应的
+  ** 其实应该算是LX，而不是lua_State，但是对外而言Lua中的线程对应的就是lua_State。
+  */
   L1 = &cast(LX *, luaM_newobject(L, LUA_TTHREAD, sizeof(LX)))->l;
   L1->marked = luaC_white(g);
+  
+  /* 
+  ** 设置lua_State对象中的类型tt为thread，因为对外而言，lua_State代表的就是一个线程的
+  ** 执行状态信息。
+  */
   L1->tt = LUA_TTHREAD;
+  
   /* link it on list 'allgc' */
+  /*
+  ** 由于lua_State类型的对象也是要GC的，因此要将这个对象挂载到global_State对象的allgc成员中，
+  ** 这样Lua的GC模块就会在适当的时候对lua_State对象进行回收。下面的操作时将L1添加到allgc链表
+  ** 的头部。
+  */
   L1->next = g->allgc;
   g->allgc = obj2gco(L1);
+  
   /* anchor it on L stack */
+  /* 将线程lua_State对象压入栈顶部，并更新栈指针。 */
   setthvalue(L, L->top, L1);
   api_incr_top(L);
+
+  /* 初始化lua_State状态信息中那些不涉及内存申请和分配的部分。 */
   preinit_thread(L1, g);
   L1->hookmask = L->hookmask;
   L1->basehookcount = L->basehookcount;
   L1->hook = L->hook;
   resethookcount(L1);
+  
   /* initialize L1 extra space */
+  /* 用主线程中的extra_数组内容来初始化本次新创建线程的extra_数组。 */
   memcpy(lua_getextraspace(L1), lua_getextraspace(g->mainthread),
          LUA_EXTRASPACE);
   luai_userstatethread(L, L1);
+  
+  /* 初始化lua_State中的虚拟栈。 */
   stack_init(L1, L);  /* init stack */
   lua_unlock(L);
   return L1;
@@ -385,7 +426,11 @@ LUA_API lua_State *lua_newstate (lua_Alloc f, void *ud) {
   /* 初始化全部线程共享的global_State状态信息。 */
   g->frealloc = f;
   g->ud = ud;
+
+  /* 保存主线程状态信息。 */
   g->mainthread = L;
+
+  /* 生成hash操作所需要的随机种子 */
   g->seed = makeseed(L);
   g->gcrunning = 0;  /* no GC while building state */
   g->GCestimate = 0;
