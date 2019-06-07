@@ -551,7 +551,7 @@ typedef struct Proto {
   int linedefined;  /* debug information  */
   int lastlinedefined;  /* debug information  */
 
-  /* 存放该函数使用的所有常量 */
+  /* 存放该函数使用的所有常量的数组，k为数组首地址 */
   TValue *k;  /* constants used by the function */
 
   /* code指向的是该函数对应的字节码存放的地址，该地址指向的内存不在虚拟栈中，而是动态申请的 */

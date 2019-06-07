@@ -204,7 +204,7 @@ LUA_API int lua_gettop (lua_State *L) {
 ** idx < 0时，L->top= L->top + 1 + idx 
 */
 LUA_API void lua_settop (lua_State *L, int idx) {
-  /* 当前函数调用栈的基址，也就是存放了函数指针的地址 */
+  /* 当前正在进行的函数调用对应的Closure对象所在栈单元 */
   StkId func = L->ci->func;
   lua_lock(L);
   if (idx >= 0) {

@@ -351,26 +351,61 @@ void luaD_inctop (lua_State *L) {
 ** called. (Both 'L->hook' and 'L->hookmask', which triggers this
 ** function, can be changed asynchronously by signals.)
 */
+/*
+** Lua的hook机制，可以在程序触发了某些事件的时候，调用我们注册的一个钩子函数。可以触发
+** hook机制的事件目前有以下几个：
+** call事件： 调用了一个函数的时候
+** return事件：函数返回
+** line事件：开始执行新的一行代码
+** count事件：执行的指令数达到指定的数量
+** 引起钩子函数调用的事件及其掩码在lua.h中定义。
+** 为给定的事件调用钩子函数。事件由参数event指定。
+*/
 void luaD_hook (lua_State *L, int event, int line) {
+  /* 获取注册的钩子函数 */
   lua_Hook hook = L->hook;
+  
+  /* 如果线程中注册了钩子函数，也允许调用钩子函数，那么就准备着手调用钩子函数。 */
   if (hook && L->allowhook) {  /* make sure there is a hook */
+    /* 获取当前的函数调用信息 */
     CallInfo *ci = L->ci;
+
+    /* 记录当前栈指针和函数栈上限相对于栈底的偏移量 */
     ptrdiff_t top = savestack(L, L->top);
     ptrdiff_t ci_top = savestack(L, ci->top);
+
+	/* 记录一些和debug相关的信息，如引发本次钩子调用的事件，文件所在行等。 */
     lua_Debug ar;
     ar.event = event;
     ar.currentline = line;
     ar.i_ci = ci;
+	
+    /* 确保栈的剩余单元个数要大于LUA_MINSTACK */
     luaD_checkstack(L, LUA_MINSTACK);  /* ensure minimum stack size */
+
+    /* 将当前函数调用的栈的上限更改为L->top + LUA_MINSTACK。确保当前函数调用有足够的栈空间 */
     ci->top = L->top + LUA_MINSTACK;
     lua_assert(ci->top <= L->stack_last);
+
+    /* 
+    ** 将lua_State中的allowhook清零，因为钩子函数不允许嵌套，所以在钩子函数里面不能再
+    ** 调用钩子函数。
+    */
     L->allowhook = 0;  /* cannot call hooks inside a hook */
+
+    /* 将函数调用的状态打上hook标记，表明当前函数调用正在执行一个钩子函数。 */
     ci->callstatus |= CIST_HOOKED;
     lua_unlock(L);
+
+    /* 正式调用钩子函数，因为钩子函数都是C函数，因此直接调用即可。 */
     (*hook)(L, &ar);
     lua_lock(L);
     lua_assert(!L->allowhook);
+
+    /* 钩子函数执行完了，可以将允许标志置位. */
     L->allowhook = 1;
+
+    /* 恢复函数调用之前的栈上限，以及栈指针。并在函数调用状态中去掉hook标记。 */
     ci->top = restorestack(L, ci_top);
     L->top = restorestack(L, top);
     ci->callstatus &= ~CIST_HOOKED;
@@ -378,21 +413,32 @@ void luaD_hook (lua_State *L, int event, int line) {
 }
 
 
+/* 触发函数调用事件（每次进行一个函数时）对应的钩子函数 */
 static void callhook (lua_State *L, CallInfo *ci) {
+  /* 函数调用事件 */
   int hook = LUA_HOOKCALL;
   ci->u.l.savedpc++;  /* hooks assume 'pc' is already incremented */
+
+  /*
+  ** 如果上一层的函数是lua函数，并且是尾调用，那么将引发钩子函数调用的事件改为函数尾调用，
+  ** 并将当前的函数调用状态信息中打上尾调用标记，表示当前的函数调用是一个尾调用。
+  */
   if (isLua(ci->previous) &&
       GET_OPCODE(*(ci->previous->u.l.savedpc - 1)) == OP_TAILCALL) {
     ci->callstatus |= CIST_TAIL;
     hook = LUA_HOOKTAILCALL;
   }
+
+  /* 根据上面指定的事件调用钩子函数 */
   luaD_hook(L, hook, -1);
   ci->u.l.savedpc--;  /* correct 'pc' */
 }
 
 
+/* 如果函数是可变参数的话，那么需要对参数做一个调整。actual是实际传递了的参数个数。 */
 static StkId adjust_varargs (lua_State *L, Proto *p, int actual) {
   int i;
+  /* 固定参数的个数 */
   int nfixargs = p->numparams;
   StkId base, fixed;
   /* move fixed parameters to final position */
@@ -468,6 +514,8 @@ static int moveresults (lua_State *L, const TValue *firstResult, StkId res,
       */
       if (nres == 0)   /* no results? */
         firstResult = luaO_nilobject;  /* adjust with nil */
+
+	  /* 将函数执行结果设置到res指向的栈单元。 */
       setobjs2s(L, res, firstResult);  /* move it to proper place */
       break;
     }
@@ -518,6 +566,8 @@ int luaD_poscall (lua_State *L, CallInfo *ci, StkId firstResult, int nres) {
   /* 取出在函数调用之前保存在CallInfo对象中预期的函数返回值个数。 */
   int wanted = ci->nresults;
   if (L->hookmask & (LUA_MASKRET | LUA_MASKLINE)) {
+  	
+    /* 如果有注册函数调用返回时对应的事件，那么要执行相应的钩子函数。 */
     if (L->hookmask & LUA_MASKRET) {
       ptrdiff_t fr = savestack(L, firstResult);  /* hook may change stack */
       luaD_hook(L, LUA_HOOKRET, -1);
@@ -592,30 +642,49 @@ int luaD_precall (lua_State *L, StkId func, int nresults) {
       /* checkstackp()用于确保当前函数调用栈有至少LUA_MINSTACK个单元 */
       checkstackp(L, LUA_MINSTACK, func);  /* ensure minimum stack size */
 	  
-	  /* 从lua_State的ci链表中获取一个CallInfo节点，用于存放当前函数调用栈的信息 */
+      /* 从lua_State的ci链表中获取一个CallInfo节点，用于存放当前函数调用栈的信息 */
       ci = next_ci(L);  /* now 'enter' new function */
       ci->nresults = nresults;
       ci->func = func;
-	  /*
-	  ** ci->top指向的是当前函数最后一个栈单元在数据栈中的位置，这里将其设置为L->top +  LUA_MINSTACK 
-	  ** 那么[func, L->top +  LUA_MINSTACK]都分配给了该函数调用过程。[func,L->top)之间是函数指针及其
-	  ** 形参的范围。注意到L->top并没有更新，指向的仍然是当前调用函数最后一个参数的下一个位置。
-	  */
+      /*
+      ** ci->top指向的是当前函数栈的最后一个栈单元在数据栈中的位置，这里将其设置为L->top +  LUA_MINSTACK 
+      ** 那么[func, L->top +  LUA_MINSTACK]都分配给了该函数调用过程。[func,L->top)之间是函数指针及其
+      ** 形参的范围。注意到L->top并没有更新，指向的仍然是当前调用函数最后一个参数的下一个位置。
+      */
+      /*
+      ** 注意到，此时没有修改L->top指针，即在准备C函数调用的时不会修改栈指针，只会设置C函数调用的
+      ** 栈范围的ci->top。但在下面真正执行C函数调用的时候，C函数里面会将结果压入栈顶部中，即此时的
+      ** C函数参数之后，栈指针也会被修改。执行完C函数之后，会调用luaD_poscall()将函数结果从函数参数
+      ** 之后的位置挪到从函数队形所在位置开始往后依次存放。最后挪动结果这一步和lua函数是一样的，在
+      ** 虚拟机luaV_execute()中，lua函数最后一步的return的也会调用luaD_poscall()将函数结果挪到lua函数
+      ** 对象所在位置开始往后依次存放。
+      */
       ci->top = L->top + LUA_MINSTACK;
       lua_assert(ci->top <= L->stack_last);
       ci->callstatus = 0;
+	  
+      /*
+      ** 因为这里即将进行一个新的函数调用，因此检查用户是否注册了函数调用的事件，如果注册了对应事件，
+      ** 则以该事件来调用用户注册的钩子函数。
+      */
       if (L->hookmask & LUA_MASKCALL)
         luaD_hook(L, LUA_HOOKCALL, -1);
       lua_unlock(L);
 	  
-	  /*
-	  ** 执行该C函数调用，C函数的调用结果会直接压入到栈中，从L->top指向的位置开始。函数执行过程
-	  ** 可以结合math库的某个函数来看，以math_abs()为例，该函数会根据自己的需要从func后面的栈单元
-	  ** 取出所需个数的参数，执行计算过程，将结果又压入到栈顶中，然后更新栈指针。函数调用的结果在
-	  ** 栈中是紧跟在函数参数之后的。在函数调用过程中，由于会往栈中压入调用结果，因此会更新L->top，
-	  ** 因此如果函数调用结果有n个，那么L->top = L->top + n，这点从math_abs()可以看出。那么函数的
-	  ** 第一个返回值在栈中的地址就是：L->top - n。
-	  */
+      /*
+      ** 执行该C函数调用，C函数的调用结果会直接压入到栈中，从L->top指向的位置开始。函数执行过程
+      ** 可以结合math库的某个函数来看，以math_abs()为例，该函数会根据自己的需要从func后面的栈单元
+      ** 取出所需个数的参数，执行计算过程，将结果又压入到栈顶中，然后更新栈指针。函数调用的结果在
+      ** 栈中是紧跟在函数参数之后的。在函数调用过程中，由于会往栈中压入调用结果，因此会更新L->top，
+      ** 因此如果函数调用结果有n个，那么L->top = L->top + n，这点从math_abs()可以看出。那么函数的
+      ** 第一个返回值在栈中的地址就是：L->top - n。
+      */
+      /*
+      ** 注意，所有注册到lua中的C函数的返回值表示C函数执行结果的个数，即压入栈中的结果的个数，从
+      ** 函数最后一个参数的下一个位置开始依次存放，在下面的luaD_poscall()中又会调用moveresults()
+      ** 将结果挪到从函数对象所在栈单元开始依次存放。函数的参数是调用该函数的地方负责压入到函数
+      ** 后面的，负责准备好的。
+      */
       n = (*f)(L);  /* do the actual call */
       lua_lock(L);
       api_checknelems(L, n);
@@ -625,6 +694,8 @@ int luaD_precall (lua_State *L, StkId func, int nresults) {
       ** (L->top -n)是执行完函数调用后第一个函数调用结果的地址。
       */
       luaD_poscall(L, ci, L->top - n, n);
+
+      /* 返回1表示是C函数调用 */
       return 1;
     }
     case LUA_TLCL: {  /* Lua function: prepare its call */
@@ -642,7 +713,9 @@ int luaD_precall (lua_State *L, StkId func, int nresults) {
       int n = cast_int(L->top - func) - 1;  /* number of real arguments */
 	  
       /* 
-      ** 获取函数内部栈的大小，并做检查。栈中除了存放函数参数之外，还包含了函数内部定义的一些变量。
+      ** 获取函数内部栈的大小，并做检查。在函数栈中，函数的形参和内部定义的本地变量对应函数栈
+      ** 中的哪个栈单元都是在指令解析过程中就确定好了的。函数的实参是在调用函数之前需要先在
+      ** 函数栈中设置好。可以参考handle_script()。
       */
       int fsize = p->maxstacksize;  /* frame size */
       checkstackp(L, fsize, func);
@@ -666,20 +739,25 @@ int luaD_precall (lua_State *L, StkId func, int nresults) {
       ci->func = func;
       ci->u.l.base = base;
 	  
-	  /* 注意到此时整个虚拟栈的栈指针和当前函数调用的栈指针是一样的。 */
+      /* 注意到此时整个虚拟栈的栈指针和当前函数调用的栈指针是一样的。 */
       L->top = ci->top = base + fsize;
 
-	  /*
-	  ** 在准备工作中，[base, ci->top)这部分栈单元就是函数内的栈，在函数执行之前，里面就已经存放
-	  ** 好了函数的参数，以及在函数内部定义的本地变量。
-	  */
+      /*
+      ** 在准备工作中，[base, ci->top)这部分栈单元就是函数内的栈。在函数栈中，函数的形参和
+      ** 内部定义的本地变量对应函数栈中的哪个栈单元都是在指令解析过程中就确定好了的。函数的
+      ** 实参是在调用函数之前需要先在函数栈中设置好。可以参考handle_script()。
+      */
 	  
       lua_assert(ci->top <= L->stack_last);
       ci->u.l.savedpc = p->code;  /* starting point */
 	  /* 标记是lua函数 */
       ci->callstatus = CIST_LUA;
+
+      /* 如果注册了函数调用事件对应的钩子函数，那么就触发钩子函数的调用 */
       if (L->hookmask & LUA_MASKCALL)
         callhook(L, ci);
+
+      /* 返回0表示是lua函数调用 */
       return 0;
     }
     default: {  /* not a function */
@@ -692,10 +770,10 @@ int luaD_precall (lua_State *L, StkId func, int nresults) {
       checkstackp(L, 1, func);  /* ensure space for metamethod */
 	  
       tryfuncTM(L, func);  /* try to get '__call' metamethod */
-	  /*
-	  ** 执行完tryfuncTM()之后，位于函数调用栈中的函数对象和参数都已经设置好了，因此可以通过
-	  ** 调用luaD_precall()来触发函数调用操作了。
-	  */
+      /*
+      ** 执行完tryfuncTM()之后，位于函数调用栈中的函数对象和参数都已经设置好了，因此可以通过
+      ** 调用luaD_precall()来触发函数调用操作了。
+      */
       return luaD_precall(L, func, nresults);  /* now it must be a function */
     }
   }

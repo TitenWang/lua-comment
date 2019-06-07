@@ -102,7 +102,7 @@ typedef struct stringtable {
 ** function can be called with the correct top.
 */
 /*
-** CallInfo结构体用于存放一个函数调用过程相关的信息（当前函数的调用栈）。
+** CallInfo结构体用于存放一个函数调用过程相关的信息。
 ** CallInfo是一个标准的双向链表结构，这个双向链表结构表示一个逻辑上的函数调用链。
 ** 在运行过程中，并不是每次调入更深层次的函数，就立刻构造出一个CallInfo节点。
 ** 整个CallInfo链表会在运行中被反复复用。直到GC的时候才清理那些比当前调用层次
@@ -114,25 +114,27 @@ typedef struct CallInfo {
 
   /*
   ** top指向函数的最后一个栈单元在栈中的位置，意思就是说func和top之间的
-  ** 这部分内容就是函数内部栈的全部内容，包括函数指针、参数值、函数内部定义的本地变量、函数调用结果等。
+  ** 这部分内容就是函数栈的全部内容，包括函数指针、参数值、函数内部定义的本地变量对应的栈单元、
+  ** 函数调用结果等。
   */
   StkId	top;  /* top for this function */
+  
   /* 用于存放函数调用链。函数调用链用一个双向链表来链接起来。 */
   struct CallInfo *previous, *next;  /* dynamic call link */
   union {
     struct {  /* only for Lua functions */
       /* 
-      ** base存放的是函数参数在栈中基地址，也就是第一个参数的地址，多个参数连续存放。
-      ** 还有函数内部定义的本地变量。[base, top)就是该函数调用内部的栈信息。下面的指令
-      ** 没有放在栈中，而是单独申请的内存。
+      ** 每个函数都有自己的栈，base存放的是函数栈的基地址，[base, top)就是该函数内部的栈地址范围。
+      ** 在函数栈中，函数的形参和内部定义的本地变量对应函数栈中的哪个栈单元都是在指令解析过程中
+      ** 就确定好了的。函数的实参是在调用函数之前需要先在函数栈中设置好。可以参考handle_script()。
       */
       StkId base;  /* base for this function */
 
       /* 
-      ** savedpc保存的是该函数调用目前已经执行到的地方，即对应于
-      ** 当前函数调用的下一条将要执行的指令的地址。如果在本函数（或闭包）中再次调用别的
-      ** 函数(或闭包), 那么该值就是本函数的运行断点，等被调用函数返回后，就从这里继续执行。
-      ** 存放函数对应指令的地址。存放函数对应的指令的内存是不在虚拟栈中的。
+      ** savedpc保存的是该函数调用目前已经执行到的地方，即指向的是当前函数调用中下一条将要执行的
+      ** 指令的地址。如果在本函数（或闭包）中再次调用别的函数(或闭包), 那么该值就是本函数的运行断点，
+      ** 等被调用函数返回后，就从savedpc指向的地方继续执行。
+      ** 存放函数对应指令的内存（savedpc指向的内存）是不在虚拟栈中的，而是通过堆动态申请的。
       */
       const Instruction *savedpc;
     } l;
@@ -296,7 +298,9 @@ struct lua_State {
   */
   CallInfo *ci;  /* call info for current function */
 
-  /* 保存上一层函数调用的执行断点，即对应于上一层函数调用的指令中，下一条将要执行的指令的地址。 */
+  /*
+  ** 保存最后一次跟踪的函数调用的执行断点，即该函数下一条将要执行的指令的地址。用于hook。
+  */
   const Instruction *oldpc;  /* last pc traced */
 
   /* stack_last存放整个栈的内存上限 */
@@ -316,14 +320,25 @@ struct lua_State {
   */
   struct lua_longjmp *errorJmp;  /* current error recover point */
 
-  /* 该线程执行的第一个函数调用信息 */
+  /* 该线程执行的第一个函数调用信息(其对应的函数对象其实是nil对象。) */
   CallInfo base_ci;  /* CallInfo for first level (C calling Lua) */
+
+  /* 用于注册钩子函数到线程中 */
   volatile lua_Hook hook;
+
+  /* 错误处理函数的在栈中的索引 */
   ptrdiff_t errfunc;  /* current error handling function (stack index) */
 
   /* stacksize存放的是函数调用栈的大小 */
   int stacksize;
+
+  /*
+  ** basehookcount是用户设置了钩子函数的计数，当虚拟机运行的指令数达到basehookcount时，
+  ** 如果注册了对应LUA_HOOKCOUNT事件的钩子函数，那么此时钩子函数就会被执行。
+  */
   int basehookcount;
+
+  /* hookcount用于记录当前距离执行对应LUA_HOOKCOUNT事件的钩子函数还剩的还没有执行的指令数。 */
   int hookcount;
 
   /* 线程中不可中断的函数调用数 */
@@ -331,7 +346,11 @@ struct lua_State {
 
   /* 嵌套调用的函数的层数 */
   unsigned short nCcalls;  /* number of nested C calls */
+
+  /* 存放触发钩子函数调用的事件对应的掩码 */
   l_signalT hookmask;
+
+  /* 线程允许执行钩子函数的标志位 */
   lu_byte allowhook;
 };
 

@@ -758,7 +758,11 @@ void luaV_finishOp (lua_State *L) {
 
 
 /* fetch an instruction and prepare its execution */
-/* 从当前函数调用栈中取出一条指令，并做一些准备工作 */
+/*
+** 从当前函数调用栈中取出一条指令，并做一些准备工作。
+** 如果注册了LUA_MASKCOUNT或者LUA_MASKLINE事件，那么就执行luaG_traceexec()
+** 来触发执行相应事件的钩子函数。
+*/
 #define vmfetch()	{ \
   i = *(ci->u.l.savedpc++); \
   if (L->hookmask & (LUA_MASKLINE | LUA_MASKCOUNT)) \
@@ -1161,11 +1165,34 @@ void luaV_execute (lua_State *L) {
         int nresults = GETARG_C(i) - 1;
         if (b != 0) L->top = ra+b;  /* else previous instruction set top */
         if (luaD_precall(L, ra, nresults)) {  /* C function? */
+          /*
+          ** 进入这个分支，说明luaD_precall()里面准备执行的函数（被调用）是一个C函数，对于C函数而言，
+          ** 在luaD_precall()函数中就已经完成了C函数的调用，并调用了luaD_poscall()将L->ci
+          ** 设置成了当前函数调用（L->ci在上面调用的luaD_precall()中会被设置为被调用函数对应的
+          ** 函数调用信息，执行完函数调用后，在luaD_poscall()又会恢复回来），同时栈指针L->top在
+          ** luaD_poscall()-->moveresults()中会被设置为C函数最后一个返回值的下一个栈单元。
+          ** 下面的分支判断中，如果C函数期望的返回值大于等于0，那么又将栈指针L->top设置成当前函数
+          ** 调用对应的ci->top，这又是为什么呢？因为被调用C函数最后一个返回的下一个栈单元不一定是
+          ** 当前函数调用的栈最后一个单元的下一个单元，而可能是在函数调用栈里面，那么这个时候
+          ** L->top指向的单元就在当前函数调用栈里面。那如果后续往栈里面写数据的话，就可能会
+          ** 破坏当前的函数调用栈里面的数据，因此这里将L->top设置成当前函数的调用栈的最后一个单元的
+          ** 下一个单元，以保证自身调用栈数据的完整和安全。
+          */
           if (nresults >= 0)
             L->top = ci->top;  /* adjust results */
+		  
+          /* base在执行C函数过程中有变化吗？为什么要重新设置呢？ */
           Protect((void)0);  /* update 'base' */
         }
         else {  /* Lua function */
+          /*
+          ** 程序进入这个分支，说明即将开始的新的函数调用（被调用的函数）时一个lua函数。
+          ** L->ci在上面调用的luaD_precall()中已经被设置为被调用函数对应的函数调用信息。
+          ** 然后跳转到newframe执行被调用函数。被调用函数中的最后一条指令肯定是return
+          ** ，被调用函数执行return（看下面的OP_RETURN分支），会调用luaD_poscall()，
+          ** 在该函数中会将L->ci重新设值为调用函数对应的ci，从而可以继续执行调用函数函数
+          ** 未完成的指令。
+          */
           ci = L->ci;
           goto newframe;  /* restart luaV_execute over new Lua function */
         }

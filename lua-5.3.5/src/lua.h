@@ -436,6 +436,15 @@ LUA_API void      (lua_setallocf) (lua_State *L, lua_Alloc f, void *ud);
 /*
 ** Event codes
 */
+/*
+** 触发钩子函数调用的事件
+** call事件： 调用了一个函数的时候
+** return事件：函数返回
+** line事件：开始执行新的一行代码（接下来即将执行的指令是不是
+**           对应了源代码文件中新的一行代码，是的话，则触发该事件）
+** count事件：执行的指令数达到指定的数量
+** tailcall事件：如果被调用的函数是一个尾调用，那么会触发该事件
+*/
 #define LUA_HOOKCALL	0
 #define LUA_HOOKRET	1
 #define LUA_HOOKLINE	2
@@ -446,6 +455,7 @@ LUA_API void      (lua_setallocf) (lua_State *L, lua_Alloc f, void *ud);
 /*
 ** Event masks
 */
+/* 触发钩子函数调用的事件掩码。 */
 #define LUA_MASKCALL	(1 << LUA_HOOKCALL)
 #define LUA_MASKRET	(1 << LUA_HOOKRET)
 #define LUA_MASKLINE	(1 << LUA_HOOKLINE)
@@ -455,6 +465,7 @@ typedef struct lua_Debug lua_Debug;  /* activation record */
 
 
 /* Functions to be called by the debugger in specific events */
+/* 钩子函数的原型 */
 typedef void (*lua_Hook) (lua_State *L, lua_Debug *ar);
 
 
@@ -475,21 +486,53 @@ LUA_API int (lua_gethookmask) (lua_State *L);
 LUA_API int (lua_gethookcount) (lua_State *L);
 
 
+/* 用于记录当前正在被调用的函数的一些信息。 */
 struct lua_Debug {
+  /* 触发钩子函数调用的事件。 */
   int event;
+
+  /* 当前正在被调用的函数的名字 */
   const char *name;	/* (n) */
+
+  /* 函数的角色 */
   const char *namewhat;	/* (n) 'global', 'local', 'field', 'method' */
+
+  /* 
+  ** 当前正在被调用的函数的类型，比如是不是lua函数，c函数，是不是一个chunk的主体，
+  ** 是不是一个被尾调用的函数等
+  */
   const char *what;	/* (S) 'Lua', 'C', 'main', 'tail' */
+
+  /*
+  ** 如果当前被调用的函数定义在字符串中，那么source就是这个字符串，
+  ** 如果定义在文件中，那么source是一个以"@"开头的函数所在的文件名。
+  */
   const char *source;	/* (S) */
+  
+  /* 触发钩子函数调用的代码行 */
   int currentline;	/* (l) */
+
+  /* 函数定义开始处的行号 */
   int linedefined;	/* (S) */
+
+  /* 函数定义结束处的行号 */
   int lastlinedefined;	/* (S) */
+
+  /* 函数自由变量的个数 */
   unsigned char nups;	/* (u) number of upvalues */
+
+  /* 函数参数的个数 */
   unsigned char nparams;/* (u) number of parameters */
+
+  /* 函数是不是可变参数类型 */
   char isvararg;        /* (u) */
+
+  /* 该函数是不是一个被尾调用的函数 */
   char istailcall;	/* (t) */
   char short_src[LUA_IDSIZE]; /* (S) */
+  
   /* private part */
+  /* 当前正在被调用函数对应的函数调用信息 */
   struct CallInfo *i_ci;  /* active function */
 };
 

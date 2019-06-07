@@ -35,13 +35,17 @@
 
 
 /* Active Lua function (given call info) */
+/* 获取函数调用信息对应的Closure对象 */
 #define ci_func(ci)		(clLvalue((ci)->func))
 
 
 static const char *funcnamefromcode (lua_State *L, CallInfo *ci,
                                     const char **name);
 
-
+/* 
+** 获取当前函数调用的程序计数器值，只支持C函数。其实计算的是当前
+** 函数调用已经执行到的指令相对于函数指令开始的偏移量。
+*/
 static int currentpc (CallInfo *ci) {
   lua_assert(isLua(ci));
   return pcRel(ci->u.l.savedpc, ci_func(ci)->p);
@@ -78,25 +82,37 @@ static void swapextra (lua_State *L) {
 ** ensures that for all platforms where it runs). Moreover, 'hook' is
 ** always checked before being called (see 'luaD_hook').
 */
+/* 设置钩子函数 */
 LUA_API void lua_sethook (lua_State *L, lua_Hook func, int mask, int count) {
   if (func == NULL || mask == 0) {  /* turn off hooks? */
     mask = 0;
     func = NULL;
   }
+
+  /* 
+  ** 如果当前正在进行的函数调用时lua好处，那么将当前函数执行到的指令地址
+  ** 保存到lua_State中的oldpc成员中。
+  */
   if (isLua(L->ci))
     L->oldpc = L->ci->u.l.savedpc;
+
+  /* 设置钩子函数 */
   L->hook = func;
+  
   L->basehookcount = count;
   resethookcount(L);
+
+  /* 设置钩子函数对应的事件掩码 */
   L->hookmask = cast_byte(mask);
 }
 
-
+/* 获取注册的钩子函数。 */
 LUA_API lua_Hook lua_gethook (lua_State *L) {
   return L->hook;
 }
 
 
+/* 获取注册的事件掩码。 */
 LUA_API int lua_gethookmask (lua_State *L) {
   return L->hookmask;
 }
@@ -662,11 +678,21 @@ l_noret luaG_runerror (lua_State *L, const char *fmt, ...) {
   luaG_errormsg(L);
 }
 
-
+/* 触发调用"指令执行条数"和"执行新的一行代码"这两个事件对应的钩子函数 */
 void luaG_traceexec (lua_State *L) {
+  /* 获取当前正在被调用的函数对应的调用信息 */
   CallInfo *ci = L->ci;
+  
+  /* 获取触发钩子函数执行的事件掩码。 */
   lu_byte mask = L->hookmask;
+  
+  /* 判断已经执行的指令条数是否达到了用户指定的条数，如果是，则为1；否则为0 */
   int counthook = (--L->hookcount == 0 && (mask & LUA_MASKCOUNT));
+  
+  /* 
+  ** 如果已经执行的指令条数达到了用户指定的条数，那么重置lua_State中的
+  ** hookcount计数器，开始新的一轮计数。
+  */
   if (counthook)
     resethookcount(L);  /* reset count */
   else if (!(mask & LUA_MASKLINE))
@@ -675,17 +701,29 @@ void luaG_traceexec (lua_State *L) {
     ci->callstatus &= ~CIST_HOOKYIELD;  /* erase mark */
     return;  /* do not call hook again (VM yielded, so it did not move) */
   }
+  
+  /* 如果已经执行的指令条数达到了用户指定的条数，则以LUA_HOOKCOUNT事件来调用钩子函数 */
   if (counthook)
     luaD_hook(L, LUA_HOOKCOUNT, -1);  /* call count hook */
   if (mask & LUA_MASKLINE) {
     Proto *p = ci_func(ci)->p;
+
+    /* 计算当前函数调用已经执行到的指令相对于函数指令开始的偏移量 */
     int npc = pcRel(ci->u.l.savedpc, p);
+
+    /*
+    ** 判断当前已经执行的指令数，是否对应了源文件中的一行代码，即判断即将执行的指令
+    ** 是不是对应源代码文件中的下一行代码。如果是，则newline为指令对应源代码文件的行号。
+    */
     int newline = getfuncline(p, npc);
     if (npc == 0 ||  /* call linehook when enter a new function, */
         ci->u.l.savedpc <= L->oldpc ||  /* when jump back (loop), or when */
         newline != getfuncline(p, pcRel(L->oldpc, p)))  /* enter a new line */
+        
+      /* 执行事件“进入新的一行代码”对应的钩子函数 */
       luaD_hook(L, LUA_HOOKLINE, newline);  /* call line hook */
   }
+  
   L->oldpc = ci->u.l.savedpc;
   if (L->status == LUA_YIELD) {  /* did hook yield? */
     if (counthook)

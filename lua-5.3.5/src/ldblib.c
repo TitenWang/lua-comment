@@ -321,6 +321,7 @@ static void hookf (lua_State *L, lua_Debug *ar) {
 /*
 ** Convert a string mask (for 'sethook') into a bit mask
 */
+/* 将hook机制相关的字符串掩码转换成对应的位掩码 */
 static int makemask (const char *smask, int count) {
   int mask = 0;
   if (strchr(smask, 'c')) mask |= LUA_MASKCALL;
@@ -334,6 +335,7 @@ static int makemask (const char *smask, int count) {
 /*
 ** Convert a bit mask (for 'gethook') into a string mask
 */
+/* 将hook机制相关的位掩码转换成对应的字符串掩码 */
 static char *unmakemask (int mask, char *smask) {
   int i = 0;
   if (mask & LUA_MASKCALL) smask[i++] = 'c';

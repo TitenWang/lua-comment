@@ -202,7 +202,7 @@ static int msghandler (lua_State *L) {
 static int docall (lua_State *L, int narg, int nres) {
   int status;
 
-  /* 获取即将被执行参数在栈中的索引 */
+  /* 获取即将被执行的函数在栈中的索引 */
   int base = lua_gettop(L) - narg;  /* function index */
 
   /* 往栈顶部压入消息处理函数对应的CClosure对象。 */
@@ -514,7 +514,10 @@ static int handle_script (lua_State *L, char **argv) {
   ** argv这三个元素。
   */
   
-  /* 加载lua代码文件，但未执行，因为lua代码文件可能需要命令行参数。 */
+  /*
+  ** 加载lua代码文件，但未执行，因为lua代码文件可能需要命令行参数。加载完之后生成的LClosure对象
+  ** 会被压入栈顶部。
+  */
   status = luaL_loadfile(L, fname);
 
   /*
@@ -795,9 +798,6 @@ int main (int argc, char **argv) {
   ** 2、将argc、argv压入虚拟栈。
   ** 3、执行函数调用。
   ** 4、从虚拟栈中获取函数调用结果。
-  ** 从这里可以看出，虚拟栈中的第一个元素是pmain对应的CClosure对象，且在luaL_newstate()中
-  ** 调用的stack_init()函数看出，主线程的base_ci存放的就是pmain()函数对应的调用信息，其中
-  ** 的func指向的就是pmain()对应的CClosure对象。
   */
   lua_pushcfunction(L, &pmain);  /* to call 'pmain' in protected mode */
   lua_pushinteger(L, argc);  /* 1st argument */

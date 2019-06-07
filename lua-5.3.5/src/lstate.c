@@ -203,20 +203,24 @@ static void stack_init (lua_State *L1, lua_State *L) {
   ci->callstatus = 0;
   
   /*
-  ** 第一个函数调用信息中的函数指针指向虚拟栈的内存起始单元。从main()函数中可以看到，
-  ** 对于主线程而言，pmain()函数会被第一个压入栈中，那么主线程中的base_ci中指向的func
-  ** 就是pmain()对应的CClosure对象，base_ci也就是pmain()的调用栈信息。对于其他线程而言，
-  ** 则需要依据具体情况而定，看看这些线程中最先执行哪个函数。
+  ** 第一个函数调用信息中的函数指针指向虚拟栈的内存起始单元。
   */
   ci->func = L1->top;
   
-  /* 往第一个函数调用信息中的函数指针对应的单元中写入nil对象 */
+  /*
+  ** 将lua_State中的base_ci函数调用信息对应的Closure对象设置成nil对象，同时增长栈指针。
+  ** 为什么这么做呢？因为base_ci并不对应一个实际的函数调用。该线程后续执行函数调用的
+  ** 时候，会在luaD_precall()中申请一个新的CallInfo对象，来保存新函数调用的信息。
+  */
   setnilvalue(L1->top++);  /* 'function' entry for this 'ci' */
 
   /* 默认栈至少LUA_MINSTACK个空闲的槽 */
   ci->top = L1->top + LUA_MINSTACK;
 
-  /* 写入函数调用链的头部，即CallInfo链表的第一个元素是lua_State中的base_ci */
+  /*
+  ** 写入函数调用链的头部，即CallInfo链表的第一个元素是lua_State中的base_ci。从main函数中可以看到，
+  ** 下面即将进行的函数调用就是pmain()。
+  */
   L1->ci = ci;
 }
 
