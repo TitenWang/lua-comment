@@ -139,6 +139,7 @@ typedef struct CallInfo {
       const Instruction *savedpc;
     } l;
     struct {  /* only for C functions */
+      /* 延续函数，用于完成被yield操作中断的函数中未完成的操作 */
       lua_KFunction k;  /* continuation in case of yields */
       /* 
       ** ptrdiff_t是C/C++标准库中定义的一个与机器相关的数据类型。ptrdiff_t类型变量
@@ -146,9 +147,13 @@ typedef struct CallInfo {
       ** old_errfunc用来保存被中断函数对应的错误处理函数。
       */
       ptrdiff_t old_errfunc;
+	  
+      /* 保存被中断函数的上下文信息，作为延续函数的参数 */
       lua_KContext ctx;  /* context info. in case of yields */
     } c;
   } u;
+
+  /* 用于在yield操作时保存被中断函数相对于栈基址的偏移量，用以在resume操作时找到被中断的函数对象 */
   ptrdiff_t extra;
 
   /* 函数调用返回值的数量 */
@@ -320,7 +325,10 @@ struct lua_State {
   */
   struct lua_longjmp *errorJmp;  /* current error recover point */
 
-  /* 该线程执行的第一个函数调用信息(其对应的函数对象其实是nil对象。) */
+  /*
+  ** 该线程执行的第一个函数调用信息(其对应的函数对象其实是nil。)，即base_ci记录的是调用栈的
+  ** 栈底（最外层的CallInfo）, base_ci对应的函数一定是从C函数发起的调用。
+  */
   CallInfo base_ci;  /* CallInfo for first level (C calling Lua) */
 
   /* 用于注册钩子函数到线程中 */

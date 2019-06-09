@@ -64,6 +64,7 @@ const char lua_ident[] =
 ** idx>0的情况，多用于操作函数调用栈时，idx<0多用于操作数据栈时和伪索引地址。
 */
 static TValue *index2addr (lua_State *L, int idx) {
+  /* 获取线程正在执行的函数对应的函数调用信息 */
   CallInfo *ci = L->ci;
   if (idx > 0) {
     /* 如果idx > 0，那么先获取idx对应的value的地址，并返回这个地址 */
@@ -136,7 +137,10 @@ LUA_API int lua_checkstack (lua_State *L, int n) {
   return res;
 }
 
-
+/*
+** 从from的栈中取最顶部的n个栈单元内容到to的栈中。即将from的栈顶部往下的n个元素移到to的栈上。
+** from的栈中会删除移动到to的栈中的这个几个元素。
+*/
 LUA_API void lua_xmove (lua_State *from, lua_State *to, int n) {
   int i;
   if (from == to) return;
@@ -144,11 +148,14 @@ LUA_API void lua_xmove (lua_State *from, lua_State *to, int n) {
   api_checknelems(from, n);
   api_check(from, G(from) == G(to), "moving among independent states");
   api_check(from, to->ci->top - to->top >= n, "stack overflow");
+  
+  /* 这两步相当于是移动完之后就删除了这n个元素。 */
   from->top -= n;
   for (i = 0; i < n; i++) {
     setobj2s(to, to->top, from->top + i);
     to->top++;  /* stack already checked by previous 'api_check' */
   }
+  
   lua_unlock(to);
 }
 
@@ -291,7 +298,7 @@ LUA_API void lua_pushvalue (lua_State *L, int idx) {
 ** access functions (stack -> C)
 */
 
-/* lua_type()函数用于获取在栈中索引为idx的Value对象的基本类型 */
+/* lua_type()函数用于获取在栈中索引为idx的TValue对象所包含数据的基本类型 */
 LUA_API int lua_type (lua_State *L, int idx) {
   StkId o = index2addr(L, idx);
   /* 
@@ -717,7 +724,7 @@ LUA_API void lua_pushlightuserdata (lua_State *L, void *p) {
 }
 
 
-/*向栈顶压入lua thread自身 */
+/*向栈顶压入lua thread自身，并且如果该线程不是主线程，则返回0，否则返回1. */
 LUA_API int lua_pushthread (lua_State *L) {
   lua_lock(L);
   setthvalue(L, L->top, L);
@@ -1230,6 +1237,8 @@ LUA_API int lua_pcallk (lua_State *L, int nargs, int nresults, int errfunc,
   **   luaD_inctop(L);
   */
   c.func = L->top - (nargs+1);  /* function to be called */
+
+  /* L->nny大于0，或者k为null，说明线程目前暂时不允许被中断执行。 */
   if (k == NULL || L->nny > 0) {  /* no continuation or no yieldable? */
     c.nresults = nresults;  /* do a 'conventional' protected call */
     /*
@@ -1240,20 +1249,43 @@ LUA_API int lua_pcallk (lua_State *L, int nargs, int nresults, int errfunc,
     status = luaD_pcall(L, f_call, &c, savestack(L, c.func), func);
   }
   else {  /* prepare continuation (call is already protected by 'resume') */
+
+    /* 程序进入这个分支，说明待执行的函数是可以被中断执行，然后在适当时候进行恢复执行的。 */
+
+    /*
+    ** 取当前正在执行的函数的调用信息，往函数调用信息中存入延续函数和上下文信息，以及在extra
+    ** 成员中存入被中断函数的函数对象相对于线程栈基址的偏移量，以便在resume的时候进行恢复。
+    ** 注意，这里的ci不是即将被调用函数的对应的函数调用信息，被调用函数对应的ci在luaD_call()中通过调
+    ** luaD_precall()才生成。这里的ci一般来说就是调用函数lua_pcallk()的函数对应的函数调用信息。举个例子，
+    ** lua_pcallk()函数会被luaB_pcall()函数调用，而luaB_pcall()函数正是对应lua接口中的pcall()函数。
+    ** 假设我们在lua的main closure中调用pcall()，这种情况下，此处的ci就是main closure对应的ci。假设
+    ** 我们在main closure中的某个lua函数xxxx()中调用pcall()函数，那么此处的ci就是xxxx()对应的ci。
+    */
     CallInfo *ci = L->ci;
     ci->u.c.k = k;  /* save continuation */
     ci->u.c.ctx = ctx;  /* save context */
     /* save information for error recovery */
     ci->extra = savestack(L, c.func);
+
+    /* 保存线程的错误处理函数，以便执行完函数之后进行恢复。 */
     ci->u.c.old_errfunc = L->errfunc;
     L->errfunc = func;
+
+    /* 给当前的函数调用状态中打上所在线程的允许hook的标记位。 */
     setoah(ci->callstatus, L->allowhook);  /* save value of 'allowhook' */
+	
+    /* 在当前的函数调用状态中打上返回点恢复（以保护模式运行）的标记 */
     ci->callstatus |= CIST_YPCALL;  /* function can do error recovery */
+
+	/* 通过调用luaD_call()来调用位于栈中的函数。注意此时的当前函数和栈中的函数是调用于被调用关系。 */
     luaD_call(L, c.func, nresults);  /* do the call */
+
+    /* 移除返回点恢复（以保护模式运行）的标记以及线程的错误处理函数。 */
     ci->callstatus &= ~CIST_YPCALL;
     L->errfunc = ci->u.c.old_errfunc;
     status = LUA_OK;  /* if it is here, there were no errors */
   }
+  
   adjustresults(L, nresults);
   lua_unlock(L);
   return status;
@@ -1304,6 +1336,7 @@ LUA_API int lua_dump (lua_State *L, lua_Writer writer, void *data, int strip) {
 }
 
 
+/* 返回线程的状态 */
 LUA_API int lua_status (lua_State *L) {
   return L->status;
 }

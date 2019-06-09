@@ -411,7 +411,7 @@ LUALIB_API void luaL_checkstack (lua_State *L, int space, const char *msg) {
   }
 }
 
-
+/* 检查栈索引为arg的TValue对象中包含了数据类型是不是和t一样，如果不一样，则报错。 */
 LUALIB_API void luaL_checktype (lua_State *L, int arg, int t) {
   if (lua_type(L, arg) != t)
     tag_error(L, arg, t);

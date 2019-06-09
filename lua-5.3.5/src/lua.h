@@ -403,6 +403,10 @@ LUA_API void      (lua_setallocf) (lua_State *L, lua_Alloc f, void *ud);
 #define lua_tostring(L,i)	lua_tolstring(L, (i), NULL)
 
 
+/* 
+** 将栈顶部元素插入到栈索引值为idx的栈单元，同时将栈顶部和idx之间（包括索引值idx的栈单元）的
+** 所有栈单元值依次往上挪一个栈单元。
+*/
 #define lua_insert(L,idx)	lua_rotate(L, (idx), 1)
 
 #define lua_remove(L,idx)	(lua_rotate(L, (idx), -1), lua_pop(L, 1))

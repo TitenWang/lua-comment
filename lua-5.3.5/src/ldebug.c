@@ -118,6 +118,7 @@ LUA_API int lua_gethookmask (lua_State *L) {
 }
 
 
+/* 获取用户设置的指令执行次数的基准。 */
 LUA_API int lua_gethookcount (lua_State *L) {
   return L->basehookcount;
 }

@@ -653,9 +653,17 @@ static void pushclosure (lua_State *L, Proto *p, UpVal **encup, StkId base,
 /*
 ** finish execution of an opcode interrupted by an yield
 */
+/* 
+** 恢复执行被中断函数中被中断的那条指令。执行完被中断的那条指令后，
+** 才会调用luaV_execute()执行后续未执行的指令，参考unroll()函数。
+*/
 void luaV_finishOp (lua_State *L) {
+
+  /* 获取当前执行函数（被中断刚恢复）对应的函数调用信息，以及函数的栈基址 */
   CallInfo *ci = L->ci;
   StkId base = ci->u.l.base;
+  
+  /* 获取函数被中断的指令 */
   Instruction inst = *(ci->u.l.savedpc - 1);  /* interrupted instruction */
   OpCode op = GET_OPCODE(inst);
   switch (op) {  /* finish its execution */
@@ -1163,7 +1171,20 @@ void luaV_execute (lua_State *L) {
       vmcase(OP_CALL) {
         int b = GETARG_B(i);
         int nresults = GETARG_C(i) - 1;
+        /*
+        ** 要调用一个新的函数时，这里将L->top设置为新函数最后一个参数的下一个栈单元，
+        ** 新被调用的函数一开始会从这里开始存放函数执行结果，执行完后才会通过moveresults()
+        ** 函数执行结果挪到从函数对象所在单元ra的位置开始依次存放。
+        ** 如果b为0，说明下面即将被调用的函数的参数个数目前来说是不确定的，这个时候的栈指针
+        ** L->top会由前面一条指令来设置。
+        ** 例如print(sum(a, b))这样一条语句，print由于不知道最终的参数个数，这个时候，对应的
+        ** 函数调用指令是CALL 0 0 1。中间的0即为这里的b，说明print的参数中含有其他的函数调用，
+        ** 由于print无法知道sum的返回值个数，也就不知道自己的参数个数，因此用0来表示参数范围
+        ** 从ra+1的的位置开始到print的函数栈顶部ci->top之间，即[ra+1, ci->top)。这种情况下L->top
+        ** 就以sum中设定的为准，sum会在return的时候根据自己的返回值情况调整好L->top。
+        */
         if (b != 0) L->top = ra+b;  /* else previous instruction set top */
+
         if (luaD_precall(L, ra, nresults)) {  /* C function? */
           /*
           ** 进入这个分支，说明luaD_precall()里面准备执行的函数（被调用）是一个C函数，对于C函数而言，
@@ -1172,7 +1193,7 @@ void luaV_execute (lua_State *L) {
           ** 函数调用信息，执行完函数调用后，在luaD_poscall()又会恢复回来），同时栈指针L->top在
           ** luaD_poscall()-->moveresults()中会被设置为C函数最后一个返回值的下一个栈单元。
           ** 下面的分支判断中，如果C函数期望的返回值大于等于0，那么又将栈指针L->top设置成当前函数
-          ** 调用对应的ci->top，这又是为什么呢？因为被调用C函数最后一个返回的下一个栈单元不一定是
+          ** 调用对应的ci->top，这又是为什么呢？因为被调用C函数最后一个返回值的下一个栈单元不一定是
           ** 当前函数调用的栈最后一个单元的下一个单元，而可能是在函数调用栈里面，那么这个时候
           ** L->top指向的单元就在当前函数调用栈里面。那如果后续往栈里面写数据的话，就可能会
           ** 破坏当前的函数调用栈里面的数据，因此这里将L->top设置成当前函数的调用栈的最后一个单元的
@@ -1230,16 +1251,47 @@ void luaV_execute (lua_State *L) {
         vmbreak;
       }
       vmcase(OP_RETURN) {
+        /* 获取return指令的B部分内容。 */
         int b = GETARG_B(i);
         if (cl->p->sizep > 0) luaF_close(L, base);
+        /*
+        ** 一般函数调用的最后一条语句是一条return语句，这条return语句会做一些收尾工作。
+        ** 调用luaD_poscall()就是做一些收尾工作，比如将L->ci设置为上一层函数对应的函数
+        ** 调用信息。如果函数有返回值，那么就将返回值挪到从函数对象开始的栈单元开始存放。
+        ** 如果return指令中的B部分不为0，则函数返回值个数为b-1。
+        */
         b = luaD_poscall(L, ci, ra, (b != 0 ? b - 1 : cast_int(L->top - ra)));
         if (ci->callstatus & CIST_FRESH)  /* local 'ci' still from callee */
           return;  /* external invocation: return */
         else {  /* invocation via reentry: continue execution */
+
+          /*
+          ** 程序进入这个分支，说明return语句对应的这个函数是被一个lua函数在虚拟机内部调用的。
+          */
+          
+          /*
+          ** L->ci在luaD_poscall()中已经设置为上一层函数对应的函数调用信息了，因此下面这条语句
+          ** 得到的ci对象是调用这个即将返回的函数的函数对应的函数调用信息。
+          */
           ci = L->ci;
+
+          /*
+          ** b是luaD_poscall()的返回值，为1表明调用该函数的时候传入的返回值个数是非LUA_MULTRET的
+          ** 其他情况，这个时候需要将L->top设置为当前函数的栈的顶部。因为在函数moveresults()中
+          ** L->top会被设置为即将返回的这个函数的返回值所在单元的下一个单元，这个位置位于上一层
+          ** 函数的栈内部。而现在已经返回到上一层函数了，因此要将整个栈的栈指针设置为上一层函数的
+          ** 栈的顶部。这样才不会导致上一层函数的栈信息的丢失。
+          */
           if (b) L->top = ci->top;
+
+		  /*
+		  ** 如在分支开头说的，return语句对应的这个函数是被一个lua函数在虚拟机内部调用的，所以
+		  ** 这个处于调用角色的函数是一个lua函数。
+		  */
           lua_assert(isLua(ci));
           lua_assert(GET_OPCODE(*((ci)->u.l.savedpc - 1)) == OP_CALL);
+		  
+          /* 设置好了ci信息，栈指针信息之后，就继续执行上一层的函数调用的剩余部分了。 */
           goto newframe;  /* restart luaV_execute over new Lua function */
         }
       }

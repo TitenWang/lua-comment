@@ -838,7 +838,10 @@ void luaD_callnoyield (lua_State *L, StkId func, int nResults) {
 ** Completes the execution of an interrupted C function, calling its
 ** continuation function.
 */
+/* 用于调用被中断函数的延续函数来完成被中断函数未完成的操作。 */
 static void finishCcall (lua_State *L, int status) {
+
+  /* 获取当前被中断的函数对应的函数调用信息 */
   CallInfo *ci = L->ci;
   int n;
   /* must have a continuation and must be able to call it */
@@ -853,9 +856,13 @@ static void finishCcall (lua_State *L, int status) {
      handled */
   adjustresults(L, ci->nresults);
   lua_unlock(L);
+
+  /* 调用延续函数，以完成被中断函数中未完成的操作 */
   n = (*ci->u.c.k)(L, status, ci->u.c.ctx);  /* call continuation function */
   lua_lock(L);
   api_checknelems(L, n);
+
+  /* 调用luaD_poscall()做一些收尾工作。 */
   luaD_poscall(L, ci, L->top - n, n);  /* finish 'luaD_precall' */
 }
 
@@ -868,13 +875,26 @@ static void finishCcall (lua_State *L, int status) {
 ** be passed to the first continuation function (otherwise the default
 ** status is LUA_YIELD).
 */
+/* 完成被中断协程（本次resume的协程）的调用链中未完成的其他函数调用 */
 static void unroll (lua_State *L, void *ud) {
   if (ud != NULL)  /* error status? */
     finishCcall(L, *(int *)ud);  /* finish 'lua_pcallk' callee */
+
+  /*
+  ** 如果L->ci!=&L->basse_ci说明当前协程的调用链中还有其他未完成的函数调用，那么此处会执行
+  ** 这些函数调用的中未完成的操作，C函数是通过调用被中断函数的延续函数来完成，而Lua函数则直接
+  ** 到虚拟机中去执行未完成的指令。
+  ** 在这个while循环中，L->ci的改变是在finishCall()中通过调用luaD_poscall()函数完成的，或者
+  ** 在luaV_execute()执行函数的最后一条指令return时调用luaD_poscall()完成的。
+  */
   while (L->ci != &L->base_ci) {  /* something in the stack */
     if (!isLua(L->ci))  /* C function? */
       finishCcall(L, LUA_YIELD);  /* complete its execution */
     else {  /* Lua function */
+      /* 
+      ** 对于Lua函数，分两步执行未完成的函数操作，首先是执行被中断的那条指令，然后才是执行
+      ** 被中断指令的后续指令。
+      */
       luaV_finishOp(L);  /* finish interrupted instruction */
       luaV_execute(L);  /* execute down to higher C 'boundary' */
     }
@@ -885,6 +905,10 @@ static void unroll (lua_State *L, void *ud) {
 /*
 ** Try to find a suspended protected call (a "recover point") for the
 ** given thread.
+*/
+/* 
+** 遍历当前线程的函数调用链，从当前线程的函数调用链中找到一个处于挂起状态的在保护模式下
+** 执行的函数调用，即函数调用的状态中包含了CIST_YPCALL标志位的第一个函数调用信息。
 */
 static CallInfo *findpcall (lua_State *L) {
   CallInfo *ci;
@@ -901,8 +925,14 @@ static CallInfo *findpcall (lua_State *L) {
 ** there is one) and completes the execution of the interrupted
 ** 'luaD_pcall'. If there is no recover point, returns zero.
 */
+/* 从协程的错误中尝试进行恢复的函数，恢复是通过 */
 static int recover (lua_State *L, int status) {
   StkId oldtop;
+
+  /* 
+  ** 从当前协程的函数调用链中找到一个处于挂起状态的在保护模式下执行的函数调用，
+  ** 如果没有找到对应的函数调用，那就说明没有返回点信息，也就不能进行恢复。
+  */
   CallInfo *ci = findpcall(L);
   if (ci == NULL) return 0;  /* no recovery point */
   /* "finish" luaD_pcall */
@@ -939,21 +969,49 @@ static int resume_error (lua_State *L, const char *msg, int narg) {
 ** function), plus erroneous cases: non-suspended coroutine or dead
 ** coroutine.
 */
+/* 协程的resume操作实现 */
 static void resume (lua_State *L, void *ud) {
+  /* 传递给resume()函数的参数个数。 */
   int n = *(cast(int*, ud));  /* number of arguments */
+
+  /* 获取第一个参数 */
   StkId firstArg = L->top - n;  /* first argument */
+
+  /* 获取协程中当前正在运行的函数调用信息 */
   CallInfo *ci = L->ci;
+  
+  /*
+  ** 如果此时协程的状态为LUA_OK，说明是第一次在该协程上执行resume操作，此时调用luaD_precall()
+  ** 做调用函数之前准备，如果是C函数的话，在luaD_precall()就会执行，如果是lua函数，准备工作完了
+  ** 之后还要在luaV_execute()虚拟机中具体执行。
+  */
   if (L->status == LUA_OK) {  /* starting a coroutine? */
     if (!luaD_precall(L, firstArg - 1, LUA_MULTRET))  /* Lua function? */
       luaV_execute(L);  /* call it */
   }
   else {  /* resuming from previous yield */
+    /* 程序进入这个分支，说明该协程并非首次执行resume，而是从之前的中断中继续执行未完成的操作。 */
+  
     lua_assert(L->status == LUA_YIELD);
     L->status = LUA_OK;  /* mark that it is running (again) */
+
+    /* 
+    ** 因为在lua_yieldk()中进行yield操作的时候，会将被中断的函数对象存放到函数调用信息的
+    ** ci_extra成员中保存起来，注意保存的是被中断的函数对象所在栈单元与栈基址的偏移量。
+    ** 因此这里从ci->extra成员中恢复出被中断的函数对象。
+    */
     ci->func = restorestack(L, ci->extra);
+
+    /* 如果被中断的函数调用是一个lua函数，则在虚拟机中继续执行该函数调用 */
     if (isLua(ci))  /* yielded inside a hook? */
       luaV_execute(L);  /* just continue running Lua code */
     else {  /* 'common' yield */
+
+      /*
+      ** 如果被中断的函数调用没有注册延续函数，那么就调用luaD_poscall()做被中断函数的收尾工作。
+      ** 相反，如果被中断的函数调用注册了延续函数，那么就调用延续函数来完成被中断函数未完成的
+      ** 操作。最后再调用luaD_poscall()来做一些收尾工作。
+      */
       if (ci->u.c.k != NULL) {  /* does it have a continuation function? */
         lua_unlock(L);
         n = (*ci->u.c.k)(L, LUA_YIELD, ci->u.c.ctx); /* call continuation */
@@ -963,27 +1021,47 @@ static void resume (lua_State *L, void *ud) {
       }
       luaD_poscall(L, ci, firstArg, n);  /* finish 'luaD_precall' */
     }
+
+	/* 完成当前协程的调用链中未完成的其他函数调用。 */
     unroll(L, NULL);  /* run continuation */
   }
 }
 
-
+/* resume操作的辅助函数，L是协程，from是调用协程的线程 */
 LUA_API int lua_resume (lua_State *L, lua_State *from, int nargs) {
   int status;
+
+  /* 
+  ** 保存当前线程中记录的不允许中断的函数调用计数，因为在执行resume操作时要将L->nny清零，
+  ** 待resume操作结束后，需要恢复L->nny的值，所以这里将保存方便后面进行恢复。
+  */
   unsigned short oldnny = L->nny;  /* save "number of non-yieldable" calls */
   lua_lock(L);
+
   if (L->status == LUA_OK) {  /* may be starting a coroutine */
     if (L->ci != &L->base_ci)  /* not in base level? */
       return resume_error(L, "cannot resume non-suspended coroutine", nargs);
   }
   else if (L->status != LUA_YIELD)
+    /* 
+    ** 如果协程的状态不是LUA_OK，也不是LUA_YIELD的话，说明这个协程状态不对，此时会报错，
+    ** 并将错误信息压入协程的栈顶部。
+    */
     return resume_error(L, "cannot resume dead coroutine", nargs);
+
+  /* 程序执行到这里，协程的状态要么是LUA_OK或者LUA_YIELD。 */
+
   L->nCcalls = (from) ? from->nCcalls + 1 : 1;
   if (L->nCcalls >= LUAI_MAXCCALLS)
     return resume_error(L, "C stack overflow", nargs);
   luai_userstateresume(L, nargs);
   L->nny = 0;  /* allow yields */
   api_checknelems(L, (L->status == LUA_OK) ? nargs + 1 : nargs);
+
+  /*
+  ** 以保护模式来调用resume()执行协程的resume操作。nargs是传递给resume()函数的参数个数，这个时候
+  ** 这些参数位于协程栈顶部。
+  */
   status = luaD_rawrunprotected(L, resume, &nargs);
   if (status == -1)  /* error calling 'lua_resume'? */
     status = LUA_ERRRUN;
@@ -999,6 +1077,8 @@ LUA_API int lua_resume (lua_State *L, lua_State *from, int nargs) {
     }
     else lua_assert(status == L->status);  /* normal end or yield */
   }
+
+  /* 恢复环境 */
   L->nny = oldnny;  /* restore 'nny' */
   L->nCcalls--;
   lua_assert(L->nCcalls == ((from) ? from->nCcalls : 0));
@@ -1006,35 +1086,51 @@ LUA_API int lua_resume (lua_State *L, lua_State *from, int nargs) {
   return status;
 }
 
-
+/* 判断当前线程中不可中断的函数调用数量是不是为0，为0，则表示当前线程是可中断的。 */
 LUA_API int lua_isyieldable (lua_State *L) {
   return (L->nny == 0);
 }
 
-
+/* 执行yield操作，中断当前正在执行的函数调用 */
 LUA_API int lua_yieldk (lua_State *L, int nresults, lua_KContext ctx,
                         lua_KFunction k) {
   CallInfo *ci = L->ci;
   luai_userstateyield(L, nresults);
   lua_lock(L);
   api_checknelems(L, nresults);
+
+  /* 如果L->nny > 0，说明被中断的协程中有不可中断的函数调用，这时会报错。 */
   if (L->nny > 0) {
     if (L != G(L)->mainthread)
       luaG_runerror(L, "attempt to yield across a C-call boundary");
     else
       luaG_runerror(L, "attempt to yield from outside a coroutine");
   }
+
+  /* 将当前的协程状态设置为LUA_YIELD，表示协程被中断 */
   L->status = LUA_YIELD;
+
+  /* 
+  ** 将当前正在执行的即将被中断的函数对象保存到函数调用信息的extra成员中，
+  ** 注意保存的不是具体的函数对象，而是函数对象相对于协程栈基址的偏移量。
+  */
   ci->extra = savestack(L, ci->func);  /* save current 'func' */
   if (isLua(ci)) {  /* inside a hook? */
     api_check(L, k == NULL, "hooks cannot continue after yielding");
   }
   else {
+    /*
+    ** 程序进入这个分支，说明被中断的函数调用不是一个Lua函数，此时需要保存被中断函数的
+    ** 上下文信息，以及用于在resume时完成被中断函数未完成操作的延续函数。
+    */
     if ((ci->u.c.k = k) != NULL)  /* is there a continuation? */
       ci->u.c.ctx = ctx;  /* save context */
     ci->func = L->top - nresults - 1;  /* protect stack below results */
+
+    /* 抛出LUA_YIELD的异常。这个时候会返回到相应的返回点，而不会执行else之后的语句。 */
     luaD_throw(L, LUA_YIELD);
   }
+  
   lua_assert(ci->callstatus & CIST_HOOKED);  /* must be inside a hook */
   lua_unlock(L);
   return 0;  /* return to 'luaD_hook' */
